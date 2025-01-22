@@ -10,6 +10,7 @@ import subprocess
 import time
 import torch
 import torchaudio
+import safetensors.torch as safetensors
 import webdataset as wds
 
 from os import path
@@ -270,7 +271,8 @@ class PreEncodedDataset(torch.utils.data.Dataset):
         min_length_sec=None,
         max_length_sec=None,
         random_crop=False,
-        latent_extension='npy'
+        latent_extension='npy',
+        read_metadata=True
     ):
         super().__init__()
         self.filenames = []
@@ -286,7 +288,7 @@ class PreEncodedDataset(torch.utils.data.Dataset):
 
         self.latent_crop_length = latent_crop_length
         self.random_crop = random_crop
-
+        self.read_metadata = read_metadata
         self.min_length_sec = min_length_sec
         self.max_length_sec = max_length_sec
 
@@ -298,15 +300,19 @@ class PreEncodedDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         latent_filename = self.filenames[idx]
         try:
-            latents = torch.from_numpy(np.load(latent_filename)) # [C, N]
 
-            md_filename = latent_filename.replace(f".{self.latent_extension}", ".json")
+            if self.latent_extension == "npy":
+                latents = torch.from_numpy(np.load(latent_filename)) # [C, N]
+            elif self.latent_extension == "safetensors":
+                latents = safetensors.load_file(latent_filename)["mix"]
 
-            with open(md_filename, "r") as f:
-                try:
-                    info = json.load(f)
-                except:
-                    raise Exception(f"Couldn't load metadata file {md_filename}")
+            if self.read_metadata:
+                md_filename = latent_filename.replace(f".{self.latent_extension}", ".json")
+                with open(md_filename, "r") as f:
+                    try:
+                        info = json.load(f)
+                    except:
+                        raise Exception(f"Couldn't load metadata file {md_filename}")
 
             info["latent_filename"] = latent_filename
 
