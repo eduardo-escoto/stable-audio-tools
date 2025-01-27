@@ -53,10 +53,18 @@ class AutoencoderPretransform(Pretransform):
             x = x.half()
             self.model.to(torch.float16)
 
-        encoded = self.model.encode_audio(x, chunked=self.chunked, iterate_batch=self.iterate_batch, **kwargs)
+        if kwargs.get("return_info", False):
+            encoded, info = self.model.encode_audio(x, chunked=self.chunked, iterate_batch=self.iterate_batch, **kwargs)
 
+            if self.model_half:
+                encoded = encoded.float()
+
+            return encoded / self.scale, info
+
+        encoded = self.model.encode_audio(x, chunked=self.chunked, iterate_batch=self.iterate_batch, **kwargs)
+        
         if self.model_half:
-            encoded = encoded.float()
+                encoded = encoded.float()
 
         return encoded / self.scale
 
