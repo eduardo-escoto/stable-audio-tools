@@ -287,18 +287,19 @@ class PreEncodedDataset(torch.utils.data.Dataset):
         min_length_sec=None,
         max_length_sec=None,
         random_crop=False,
-        latent_extension="npy",
         read_metadata=True,
+        extensions: list[str] =[".wav", ".mp3", ".flac", ".ogg", ".aif", ".opus"],
+        safetensor_key: str = "latents",
     ):
         super().__init__()
         self.filenames = []
-
+        self.extensions = extensions
+        self.safetenor_key = safetensor_key
         self.custom_metadata_fns = {}
 
-        self.latent_extension = latent_extension
-
         for config in configs:
-            self.filenames.extend(get_latent_filenames(config.path, [latent_extension]))
+            print(f"Loading files from {config.path} with extensions {extensions}")
+            self.filenames.extend(get_latent_filenames(config.path, extensions))
             if config.custom_metadata_fn is not None:
                 self.custom_metadata_fns[config.path] = config.custom_metadata_fn
 
@@ -315,22 +316,24 @@ class PreEncodedDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         latent_filename = self.filenames[idx]
+        file_type = latent_filename.split(".")[-1]
         try:
-            if self.latent_extension == "npy":
-                latents = torch.from_numpy(np.load(latent_filename))  # [C, N]
-            elif self.latent_extension == "safetensors":
-                latents = safetensors.load_file(latent_filename)["mix"]
-
-            info = {"padding_mask": [1] * latents.size(1)}
             if self.read_metadata:
                 md_filename = latent_filename.replace(
-                    f".{self.latent_extension}", ".json"
+                    f".{file_type}", ".json"
                 )
                 with open(md_filename, "r") as f:
                     try:
                         info = json.load(f)
                     except:
                         raise Exception(f"Couldn't load metadata file {md_filename}")
+                    
+            if file_type == "npy":
+                latents = torch.from_numpy(np.load(latent_filename))  # [C, N]
+            elif file_type == "safetensors":
+                sf_tensors = safetensors.load_file(latent_filename)
+                info['padding_mask'] = sf_tensors["padding_mask"]
+                latents = sf_tensors["latents"]
 
             info["latent_filename"] = latent_filename
 
@@ -354,7 +357,8 @@ class PreEncodedDataset(torch.utils.data.Dataset):
                 info["latent_crop_length"] = self.latent_crop_length
                 info["latent_crop_start"] = start
 
-            info["padding_mask"] = [torch.tensor(info["padding_mask"])]
+            if type(info["padding_mask"]) is not torch.Tensor:
+                info["padding_mask"] = [torch.tensor(info["padding_mask"])]
 
             seconds_total = info.get("seconds_total", 0)
 
@@ -377,7 +381,7 @@ class PreEncodedDataset(torch.utils.data.Dataset):
                     # Replace the latents with the new latents if the custom metadata function returns a new set of latents
                     latents = info["__replace__"]
 
-            info["audio"] = latents
+            info["latent"] = latents
 
             return (latents, info)
         except Exception as e:
@@ -888,8 +892,8 @@ class WebDatasetDataLoader:
 def create_dataloader_from_config(
     dataset_config,
     batch_size,
-    sample_size,
-    sample_rate,
+    sample_size=None,
+    sample_rate=None,
     audio_channels=2,
     num_workers=4,
     shuffle=True,
@@ -970,6 +974,8 @@ def create_dataloader_from_config(
         min_length_sec = dataset_config.get("min_length_sec", None)
         max_length_sec = dataset_config.get("max_length_sec", None)
         random_crop = dataset_config.get("random_crop", False)
+        extensions = dataset_config.get("extensions", ["npy"])
+        safetensor_key = dataset_config.get("safetensor_key", "latents")
 
         configs = []
 
@@ -997,11 +1003,10 @@ def create_dataloader_from_config(
                 LocalDatasetConfig(
                     id=pre_encoded_dir_config["id"],
                     path=pre_encoded_dir_path,
-                    custom_metadata_fn=custom_metadata_fn,
+                    custom_metadata_fn=custom_metadata_fn
                 )
             )
 
-        latent_extension = dataset_config.get("latent_extension", "npy")
 
         train_set = PreEncodedDataset(
             configs,
@@ -1009,7 +1014,8 @@ def create_dataloader_from_config(
             min_length_sec=min_length_sec,
             max_length_sec=max_length_sec,
             random_crop=random_crop,
-            latent_extension=latent_extension,
+            extensions=extensions,
+            safetensor_key=safetensor_key,
         )
 
         return torch.utils.data.DataLoader(

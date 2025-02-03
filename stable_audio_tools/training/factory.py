@@ -153,7 +153,19 @@ def create_training_wrapper_from_config(model_config, model):
             optimizer_configs=training_config.get("optimizer_configs", None),
             pre_encoded=training_config.get("pre_encoded", False),
         )
-
+    
+    elif model_type == 'hyperencoder':
+        from .autoencoders import HyperencoderTrainingWrapper
+        return HyperencoderTrainingWrapper(
+            model,
+            ema_copy=ema_copy,
+            lr=training_config.get("learning_rate", None),
+            use_ema=training_config.get("use_ema", False),
+            optimizer_configs=training_config.get("optimizer_configs", None),
+            pre_encoded=training_config.get("pre_encoded", False),
+            loss_config=training_config.get("loss_configs", None),
+            eval_loss_config=training_config.get("eval_loss_configs", None),
+        )
     else:
         raise NotImplementedError(f'Unknown model type: {model_type}')
 

@@ -14,7 +14,12 @@ from ..inference.sampling import sample
 from ..inference.utils import prepare_audio
 from .blocks import SnakeBeta
 from .bottleneck import Bottleneck, DiscreteBottleneck
-from .diffusion import ConditionedDiffusionModel, DAU1DCondWrapper, UNet1DCondWrapper, DiTWrapper
+from .diffusion import (
+    ConditionedDiffusionModel,
+    DAU1DCondWrapper,
+    UNet1DCondWrapper,
+    DiTWrapper,
+)
 from .factory import create_pretransform_from_config, create_bottleneck_from_config
 from .pretransforms import Pretransform, AutoencoderPretransform
 from .transformer import ContinuousTransformer, TransformerBlock, RotaryEmbedding
@@ -23,14 +28,19 @@ from .transformer import ContinuousTransformer, TransformerBlock, RotaryEmbeddin
 def WNConv1d(*args, **kwargs):
     return weight_norm(nn.Conv1d(*args, **kwargs))
 
+
 def WNConvTranspose1d(*args, **kwargs):
     return weight_norm(nn.ConvTranspose1d(*args, **kwargs))
+
 
 def checkpoint(function, *args, **kwargs):
     kwargs.setdefault("use_reentrant", False)
     return torch.utils.checkpoint.checkpoint(function, *args, **kwargs)
 
-def get_activation(activation: Literal["elu", "snake", "none"], antialias=False, channels=None) -> nn.Module:
+
+def get_activation(
+    activation: Literal["elu", "snake", "none"], antialias=False, channels=None
+) -> nn.Module:
     if activation == "elu":
         act = nn.ELU()
     elif activation == "snake":
@@ -39,45 +49,68 @@ def get_activation(activation: Literal["elu", "snake", "none"], antialias=False,
         act = nn.Identity()
     else:
         raise ValueError(f"Unknown activation {activation}")
-    
+
     if antialias:
         act = Activation1d(act)
-    
+
     return act
 
+
 def fold_channels_into_batch(x):
-    x = rearrange(x, 'b c ... -> (b c) ...')
+    x = rearrange(x, "b c ... -> (b c) ...")
     return x
+
 
 def unfold_channels_from_batch(x, channels):
     if channels == 1:
         return x.unsqueeze(1)
-    x = rearrange(x, '(b c) ... -> b c ...', c = channels)
+    x = rearrange(x, "(b c) ... -> b c ...", c=channels)
     return x
 
 
 class ResidualUnit(nn.Module):
-    def __init__(self, in_channels, out_channels, dilation, use_snake=False, antialias_activation=False):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        dilation,
+        use_snake=False,
+        antialias_activation=False,
+    ):
         super().__init__()
-        
+
         self.dilation = dilation
 
-        padding = (dilation * (7-1)) // 2
+        padding = (dilation * (7 - 1)) // 2
 
         self.layers = nn.Sequential(
-            get_activation("snake" if use_snake else "elu", antialias=antialias_activation, channels=out_channels),
-            WNConv1d(in_channels=in_channels, out_channels=out_channels,
-                      kernel_size=7, dilation=dilation, padding=padding),
-            get_activation("snake" if use_snake else "elu", antialias=antialias_activation, channels=out_channels),
-            WNConv1d(in_channels=out_channels, out_channels=out_channels,
-                      kernel_size=1)
+            get_activation(
+                "snake" if use_snake else "elu",
+                antialias=antialias_activation,
+                channels=out_channels,
+            ),
+            WNConv1d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=7,
+                dilation=dilation,
+                padding=padding,
+            ),
+            get_activation(
+                "snake" if use_snake else "elu",
+                antialias=antialias_activation,
+                channels=out_channels,
+            ),
+            WNConv1d(
+                in_channels=out_channels, out_channels=out_channels, kernel_size=1
+            ),
         )
 
     def forward(self, x):
         res = x
-        
+
         x = checkpoint(self.layers, x)
-        #x = self.layers(x)
+        # x = self.layers(x)
 
         return x + res
 
@@ -85,125 +118,178 @@ class ResidualUnit(nn.Module):
 class Transpose(nn.Module):
     def __init__(self):
         super().__init__()
+
     def forward(self, x):
-        return x.transpose(-1,-2)
+        return x.transpose(-1, -2)
+
 
 class TAAEBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride, type = 'encoder', transformer_depth = 3, use_snake = False, sliding_window = [31,32], checkpointing = False, conformer = False, layer_scale = True, use_dilated_conv = False):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        stride,
+        type="encoder",
+        transformer_depth=3,
+        use_snake=False,
+        sliding_window=[31, 32],
+        checkpointing=False,
+        conformer=False,
+        layer_scale=True,
+        use_dilated_conv=False,
+    ):
         super().__init__()
-        if type not in ['encoder', 'decoder']:
+        if type not in ["encoder", "decoder"]:
             raise ValueError(f"Unknown type {type}. Must be 'encoder' or 'decoder'")
-        
+
         self.checkpointing = checkpointing
-        
-        transformer_dim = out_channels if type == 'encoder' else in_channels
+
+        transformer_dim = out_channels if type == "encoder" else in_channels
         transformers = []
         transformers.append(Transpose())
 
         for _ in range(transformer_depth):
-            transformers.append(TransformerBlock(transformer_dim, 
-                                                 dim_heads = 128, 
-                                                 causal = False, 
-                                                 zero_init_branch_outputs = True if not layer_scale else False, 
-                                                 remove_norms = False, 
-                                                 conformer = conformer, 
-                                                 layer_scale = layer_scale, 
-                                                 add_rope = True, 
-                                                 attn_kwargs={'sliding_window': sliding_window, 'qk_norm': "ln"}, 
-                                                 ff_kwargs={'mult': 4, 'no_bias': False},
-                                                 norm_kwargs = {'eps': 1e-2}))
+            transformers.append(
+                TransformerBlock(
+                    transformer_dim,
+                    dim_heads=128,
+                    causal=False,
+                    zero_init_branch_outputs=True if not layer_scale else False,
+                    remove_norms=False,
+                    conformer=conformer,
+                    layer_scale=layer_scale,
+                    add_rope=True,
+                    attn_kwargs={"sliding_window": sliding_window, "qk_norm": "ln"},
+                    ff_kwargs={"mult": 4, "no_bias": False},
+                    norm_kwargs={"eps": 1e-2},
+                )
+            )
         transformers.append(Transpose())
         transformers = nn.Sequential(*transformers)
 
-        if type == 'encoder':
+        if type == "encoder":
             layers = []
             if stride > 1 or in_channels != out_channels:
                 conv_type = WNConv1d
             else:
                 conv_type = nn.Identity
             if use_dilated_conv:
-                layers.append(ResidualUnit(in_channels=in_channels, out_channels=in_channels, dilation=1, use_snake=use_snake))
-                layers.append(ResidualUnit(in_channels=in_channels, out_channels=in_channels, dilation=3, use_snake=use_snake))
-                layers.append(ResidualUnit(in_channels=in_channels, out_channels=in_channels, dilation=9, use_snake=use_snake))
-            layers.append(get_activation("snake" if use_snake else "none", antialias=False, channels=in_channels))
-            layers.append(conv_type(in_channels=in_channels, out_channels=out_channels, kernel_size=2*stride, stride=stride, padding=math.ceil(stride/2)))
+                layers.append(
+                    ResidualUnit(
+                        in_channels=in_channels,
+                        out_channels=in_channels,
+                        dilation=1,
+                        use_snake=use_snake,
+                    )
+                )
+                layers.append(
+                    ResidualUnit(
+                        in_channels=in_channels,
+                        out_channels=in_channels,
+                        dilation=3,
+                        use_snake=use_snake,
+                    )
+                )
+                layers.append(
+                    ResidualUnit(
+                        in_channels=in_channels,
+                        out_channels=in_channels,
+                        dilation=9,
+                        use_snake=use_snake,
+                    )
+                )
+            layers.append(
+                get_activation(
+                    "snake" if use_snake else "none",
+                    antialias=False,
+                    channels=in_channels,
+                )
+            )
+            layers.append(
+                conv_type(
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    kernel_size=2 * stride,
+                    stride=stride,
+                    padding=math.ceil(stride / 2),
+                )
+            )
             layers.append(transformers)
             self.layers = nn.Sequential(*layers)
-        elif type == 'decoder':
+        elif type == "decoder":
             layers = []
             if stride > 1 or in_channels != out_channels:
                 conv_type = WNConvTranspose1d
             else:
                 conv_type = nn.Identity
             layers.append(transformers)
-            layers.append(get_activation("snake" if use_snake else "none", antialias=False, channels=in_channels))
-            layers.append(conv_type(in_channels=in_channels,
-                          out_channels=out_channels,
-                          kernel_size=2*stride, stride=stride, padding=math.ceil(stride/2)))
+            layers.append(
+                get_activation(
+                    "snake" if use_snake else "none",
+                    antialias=False,
+                    channels=in_channels,
+                )
+            )
+            layers.append(
+                conv_type(
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    kernel_size=2 * stride,
+                    stride=stride,
+                    padding=math.ceil(stride / 2),
+                )
+            )
             if use_dilated_conv:
-                layers.append(ResidualUnit(in_channels=out_channels, out_channels=out_channels, dilation=1, use_snake=use_snake))
-                layers.append(ResidualUnit(in_channels=out_channels, out_channels=out_channels, dilation=3, use_snake=use_snake))
-                layers.append(ResidualUnit(in_channels=out_channels, out_channels=out_channels, dilation=9, use_snake=use_snake))
+                layers.append(
+                    ResidualUnit(
+                        in_channels=out_channels,
+                        out_channels=out_channels,
+                        dilation=1,
+                        use_snake=use_snake,
+                    )
+                )
+                layers.append(
+                    ResidualUnit(
+                        in_channels=out_channels,
+                        out_channels=out_channels,
+                        dilation=3,
+                        use_snake=use_snake,
+                    )
+                )
+                layers.append(
+                    ResidualUnit(
+                        in_channels=out_channels,
+                        out_channels=out_channels,
+                        dilation=9,
+                        use_snake=use_snake,
+                    )
+                )
             self.layers = nn.Sequential(*layers)
+
     def forward(self, x):
         if self.checkpointing:
             return checkpoint(self.layers, x)
         else:
             return self.layers(x)
 
+
 class TAAEEncoder(nn.Module):
-    def __init__(self, 
-                 in_channels=2, 
-                 channels=128, 
-                 latent_dim=32, 
-                 c_mults = [1, 2, 4, 8], 
-                 strides = [2, 4, 8, 8],
-                 transformer_depths = [3,3,3,3],
-                 use_snake=False,
-                 sliding_window = [63,64],
-                 checkpointing = False,
-                 conformer = False,
-                 layer_scale = True,
-                 use_dilated_conv = False,
-                 **kwargs
-        ):
-        super().__init__()
-          
-        channel_dims = [c * channels for c in c_mults]
-        channel_dims = [channel_dims[0]] + channel_dims
-
-        self.depth = len(c_mults)
-
-        layers = [WNConv1d(in_channels=in_channels, out_channels=channel_dims[0], kernel_size=7, padding=3, bias = True)]
-
-        for i in range(self.depth):
-            layers += [TAAEBlock(in_channels=channel_dims[i], out_channels=channel_dims[i+1], stride=strides[i], transformer_depth = transformer_depths[i], use_snake=use_snake, sliding_window = sliding_window, checkpointing = checkpointing, conformer = conformer, layer_scale = layer_scale, use_dilated_conv = use_dilated_conv, **kwargs)]
-
-        layers += [
-            get_activation("snake" if use_snake else "none", antialias=False, channels=channel_dims[-1]),
-            WNConv1d(in_channels=channel_dims[-1], out_channels=latent_dim, kernel_size=3, padding=1, bias = True)
-        ]
-        self.layers = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.layers(x)
-
-class TAAEDecoder(nn.Module):
-    def __init__(self, 
-                 out_channels=2, 
-                 channels=128, 
-                 latent_dim=32, 
-                 c_mults = [1, 2, 4, 8], 
-                 strides = [2, 4, 8, 8],
-                 transformer_depths = [3,3,3,3],
-                 use_snake=False,
-                 sliding_window = [63,64],
-                 checkpointing = False,
-                 conformer = False,
-                 layer_scale = True,
-                 use_dilated_conv = False,
-                 **kwargs
-        ):
+    def __init__(
+        self,
+        in_channels=2,
+        channels=128,
+        latent_dim=32,
+        c_mults=[1, 2, 4, 8],
+        strides=[2, 4, 8, 8],
+        transformer_depths=[3, 3, 3, 3],
+        use_snake=False,
+        sliding_window=[63, 64],
+        checkpointing=False,
+        conformer=False,
+        layer_scale=True,
+        use_dilated_conv=False,
+        **kwargs,
+    ):
         super().__init__()
 
         channel_dims = [c * channels for c in c_mults]
@@ -212,98 +298,285 @@ class TAAEDecoder(nn.Module):
         self.depth = len(c_mults)
 
         layers = [
-            WNConv1d(in_channels=latent_dim, out_channels=channel_dims[-1], kernel_size=3, padding=1, bias = True)
+            WNConv1d(
+                in_channels=in_channels,
+                out_channels=channel_dims[0],
+                kernel_size=7,
+                padding=3,
+                bias=True,
+            )
         ]
-        
-        for i in range(self.depth, 0, -1):
-            layers += [TAAEBlock(in_channels=channel_dims[i], out_channels=channel_dims[i-1], stride=strides[i-1], type = 'decoder', transformer_depth = transformer_depths[i-1], use_snake=use_snake, sliding_window = sliding_window, checkpointing = checkpointing, conformer = conformer, layer_scale = layer_scale, use_dilated_conv = use_dilated_conv, **kwargs)]  
 
-        layers += [get_activation("snake" if use_snake else "none", antialias=False, channels=channel_dims[0]),
-                    WNConv1d(in_channels=channel_dims[0], out_channels=out_channels, kernel_size=7, padding=3, bias = False)]
+        for i in range(self.depth):
+            layers += [
+                TAAEBlock(
+                    in_channels=channel_dims[i],
+                    out_channels=channel_dims[i + 1],
+                    stride=strides[i],
+                    transformer_depth=transformer_depths[i],
+                    use_snake=use_snake,
+                    sliding_window=sliding_window,
+                    checkpointing=checkpointing,
+                    conformer=conformer,
+                    layer_scale=layer_scale,
+                    use_dilated_conv=use_dilated_conv,
+                    **kwargs,
+                )
+            ]
+
+        layers += [
+            get_activation(
+                "snake" if use_snake else "none",
+                antialias=False,
+                channels=channel_dims[-1],
+            ),
+            WNConv1d(
+                in_channels=channel_dims[-1],
+                out_channels=latent_dim,
+                kernel_size=3,
+                padding=1,
+                bias=True,
+            ),
+        ]
+        self.layers = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.layers(x)
+
+
+class TAAEDecoder(nn.Module):
+    def __init__(
+        self,
+        out_channels=2,
+        channels=128,
+        latent_dim=32,
+        c_mults=[1, 2, 4, 8],
+        strides=[2, 4, 8, 8],
+        transformer_depths=[3, 3, 3, 3],
+        use_snake=False,
+        sliding_window=[63, 64],
+        checkpointing=False,
+        conformer=False,
+        layer_scale=True,
+        use_dilated_conv=False,
+        **kwargs,
+    ):
+        super().__init__()
+
+        channel_dims = [c * channels for c in c_mults]
+        channel_dims = [channel_dims[0]] + channel_dims
+
+        self.depth = len(c_mults)
+
+        layers = [
+            WNConv1d(
+                in_channels=latent_dim,
+                out_channels=channel_dims[-1],
+                kernel_size=3,
+                padding=1,
+                bias=True,
+            )
+        ]
+
+        for i in range(self.depth, 0, -1):
+            layers += [
+                TAAEBlock(
+                    in_channels=channel_dims[i],
+                    out_channels=channel_dims[i - 1],
+                    stride=strides[i - 1],
+                    type="decoder",
+                    transformer_depth=transformer_depths[i - 1],
+                    use_snake=use_snake,
+                    sliding_window=sliding_window,
+                    checkpointing=checkpointing,
+                    conformer=conformer,
+                    layer_scale=layer_scale,
+                    use_dilated_conv=use_dilated_conv,
+                    **kwargs,
+                )
+            ]
+
+        layers += [
+            get_activation(
+                "snake" if use_snake else "none",
+                antialias=False,
+                channels=channel_dims[0],
+            ),
+            WNConv1d(
+                in_channels=channel_dims[0],
+                out_channels=out_channels,
+                kernel_size=7,
+                padding=3,
+                bias=False,
+            ),
+        ]
 
         self.layers = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.layers(x)
 
+
 class EncoderBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride, use_snake=False, antialias_activation=False):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        stride,
+        use_snake=False,
+        antialias_activation=False,
+    ):
         super().__init__()
 
         self.layers = nn.Sequential(
-            ResidualUnit(in_channels=in_channels,
-                         out_channels=in_channels, dilation=1, use_snake=use_snake),
-            ResidualUnit(in_channels=in_channels,
-                         out_channels=in_channels, dilation=3, use_snake=use_snake),
-            ResidualUnit(in_channels=in_channels,
-                         out_channels=in_channels, dilation=9, use_snake=use_snake),
-            get_activation("snake" if use_snake else "elu", antialias=antialias_activation, channels=in_channels),
-            WNConv1d(in_channels=in_channels, out_channels=out_channels,
-                      kernel_size=2*stride, stride=stride, padding=math.ceil(stride/2)),
+            ResidualUnit(
+                in_channels=in_channels,
+                out_channels=in_channels,
+                dilation=1,
+                use_snake=use_snake,
+            ),
+            ResidualUnit(
+                in_channels=in_channels,
+                out_channels=in_channels,
+                dilation=3,
+                use_snake=use_snake,
+            ),
+            ResidualUnit(
+                in_channels=in_channels,
+                out_channels=in_channels,
+                dilation=9,
+                use_snake=use_snake,
+            ),
+            get_activation(
+                "snake" if use_snake else "elu",
+                antialias=antialias_activation,
+                channels=in_channels,
+            ),
+            WNConv1d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=2 * stride,
+                stride=stride,
+                padding=math.ceil(stride / 2),
+            ),
         )
 
     def forward(self, x):
         return self.layers(x)
 
+
 class DecoderBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride, use_snake=False, antialias_activation=False, use_nearest_upsample=False):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        stride,
+        use_snake=False,
+        antialias_activation=False,
+        use_nearest_upsample=False,
+    ):
         super().__init__()
 
         if use_nearest_upsample:
             upsample_layer = nn.Sequential(
                 nn.Upsample(scale_factor=stride, mode="nearest"),
-                WNConv1d(in_channels=in_channels,
-                        out_channels=out_channels, 
-                        kernel_size=2*stride,
-                        stride=1,
-                        bias=False,
-                        padding='same')
+                WNConv1d(
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    kernel_size=2 * stride,
+                    stride=1,
+                    bias=False,
+                    padding="same",
+                ),
             )
         else:
-            upsample_layer = WNConvTranspose1d(in_channels=in_channels,
-                               out_channels=out_channels,
-                               kernel_size=2*stride, stride=stride, padding=math.ceil(stride/2))
+            upsample_layer = WNConvTranspose1d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=2 * stride,
+                stride=stride,
+                padding=math.ceil(stride / 2),
+            )
 
         self.layers = nn.Sequential(
-            get_activation("snake" if use_snake else "elu", antialias=antialias_activation, channels=in_channels),
+            get_activation(
+                "snake" if use_snake else "elu",
+                antialias=antialias_activation,
+                channels=in_channels,
+            ),
             upsample_layer,
-            ResidualUnit(in_channels=out_channels, out_channels=out_channels,
-                         dilation=1, use_snake=use_snake),
-            ResidualUnit(in_channels=out_channels, out_channels=out_channels,
-                         dilation=3, use_snake=use_snake),
-            ResidualUnit(in_channels=out_channels, out_channels=out_channels,
-                         dilation=9, use_snake=use_snake),
+            ResidualUnit(
+                in_channels=out_channels,
+                out_channels=out_channels,
+                dilation=1,
+                use_snake=use_snake,
+            ),
+            ResidualUnit(
+                in_channels=out_channels,
+                out_channels=out_channels,
+                dilation=3,
+                use_snake=use_snake,
+            ),
+            ResidualUnit(
+                in_channels=out_channels,
+                out_channels=out_channels,
+                dilation=9,
+                use_snake=use_snake,
+            ),
         )
 
     def forward(self, x):
         return self.layers(x)
 
+
 class OobleckEncoder(nn.Module):
-    def __init__(self, 
-                 in_channels=2, 
-                 channels=128, 
-                 latent_dim=32, 
-                 c_mults = [1, 2, 4, 8], 
-                 strides = [2, 4, 8, 8],
-                 use_snake=False,
-                 antialias_activation=False
-        ):
+    def __init__(
+        self,
+        in_channels=2,
+        channels=128,
+        latent_dim=32,
+        c_mults=[1, 2, 4, 8],
+        strides=[2, 4, 8, 8],
+        use_snake=False,
+        antialias_activation=False,
+    ):
         super().__init__()
-          
+
         c_mults = [1] + c_mults
 
         self.depth = len(c_mults)
 
         layers = [
-            WNConv1d(in_channels=in_channels, out_channels=c_mults[0] * channels, kernel_size=7, padding=3)
+            WNConv1d(
+                in_channels=in_channels,
+                out_channels=c_mults[0] * channels,
+                kernel_size=7,
+                padding=3,
+            )
         ]
-        
-        for i in range(self.depth-1):
-            layers += [EncoderBlock(in_channels=c_mults[i]*channels, out_channels=c_mults[i+1]*channels, stride=strides[i], use_snake=use_snake)]
+
+        for i in range(self.depth - 1):
+            layers += [
+                EncoderBlock(
+                    in_channels=c_mults[i] * channels,
+                    out_channels=c_mults[i + 1] * channels,
+                    stride=strides[i],
+                    use_snake=use_snake,
+                )
+            ]
 
         layers += [
-            get_activation("snake" if use_snake else "elu", antialias=antialias_activation, channels=c_mults[-1] * channels),
-            WNConv1d(in_channels=c_mults[-1]*channels, out_channels=latent_dim, kernel_size=3, padding=1)
+            get_activation(
+                "snake" if use_snake else "elu",
+                antialias=antialias_activation,
+                channels=c_mults[-1] * channels,
+            ),
+            WNConv1d(
+                in_channels=c_mults[-1] * channels,
+                out_channels=latent_dim,
+                kernel_size=3,
+                padding=1,
+            ),
         ]
 
         self.layers = nn.Sequential(*layers)
@@ -313,41 +586,59 @@ class OobleckEncoder(nn.Module):
 
 
 class OobleckDecoder(nn.Module):
-    def __init__(self, 
-                 out_channels=2, 
-                 channels=128, 
-                 latent_dim=32, 
-                 c_mults = [1, 2, 4, 8], 
-                 strides = [2, 4, 8, 8],
-                 use_snake=False,
-                 antialias_activation=False,
-                 use_nearest_upsample=False,
-                 final_tanh=True):
+    def __init__(
+        self,
+        out_channels=2,
+        channels=128,
+        latent_dim=32,
+        c_mults=[1, 2, 4, 8],
+        strides=[2, 4, 8, 8],
+        use_snake=False,
+        antialias_activation=False,
+        use_nearest_upsample=False,
+        final_tanh=True,
+    ):
         super().__init__()
 
         c_mults = [1] + c_mults
-        
+
         self.depth = len(c_mults)
 
         layers = [
-            WNConv1d(in_channels=latent_dim, out_channels=c_mults[-1]*channels, kernel_size=7, padding=3),
+            WNConv1d(
+                in_channels=latent_dim,
+                out_channels=c_mults[-1] * channels,
+                kernel_size=7,
+                padding=3,
+            ),
         ]
-        
-        for i in range(self.depth-1, 0, -1):
-            layers += [DecoderBlock(
-                in_channels=c_mults[i]*channels, 
-                out_channels=c_mults[i-1]*channels, 
-                stride=strides[i-1], 
-                use_snake=use_snake, 
-                antialias_activation=antialias_activation,
-                use_nearest_upsample=use_nearest_upsample
+
+        for i in range(self.depth - 1, 0, -1):
+            layers += [
+                DecoderBlock(
+                    in_channels=c_mults[i] * channels,
+                    out_channels=c_mults[i - 1] * channels,
+                    stride=strides[i - 1],
+                    use_snake=use_snake,
+                    antialias_activation=antialias_activation,
+                    use_nearest_upsample=use_nearest_upsample,
                 )
             ]
 
         layers += [
-            get_activation("snake" if use_snake else "elu", antialias=antialias_activation, channels=c_mults[0] * channels),
-            WNConv1d(in_channels=c_mults[0] * channels, out_channels=out_channels, kernel_size=7, padding=3, bias=False),
-            nn.Tanh() if final_tanh else nn.Identity()
+            get_activation(
+                "snake" if use_snake else "elu",
+                antialias=antialias_activation,
+                channels=c_mults[0] * channels,
+            ),
+            WNConv1d(
+                in_channels=c_mults[0] * channels,
+                out_channels=out_channels,
+                kernel_size=7,
+                padding=3,
+                bias=False,
+            ),
+            nn.Tanh() if final_tanh else nn.Identity(),
         ]
 
         self.layers = nn.Sequential(*layers)
@@ -369,15 +660,22 @@ class DACEncoderWrapper(nn.Module):
         self.latent_dim = latent_dim
 
         # Latent-dim support was added to DAC after this was first written, and implemented differently, so this is for backwards compatibility
-        self.proj_out = nn.Conv1d(self.encoder.enc_dim, latent_dim, kernel_size=1) if latent_dim is not None else nn.Identity()
+        self.proj_out = (
+            nn.Conv1d(self.encoder.enc_dim, latent_dim, kernel_size=1)
+            if latent_dim is not None
+            else nn.Identity()
+        )
 
         if in_channels != 1:
-            self.encoder.block[0] = WNConv1d(in_channels, kwargs.get("d_model", 64), kernel_size=7, padding=3)
+            self.encoder.block[0] = WNConv1d(
+                in_channels, kwargs.get("d_model", 64), kernel_size=7, padding=3
+            )
 
     def forward(self, x):
         x = self.encoder(x)
         x = self.proj_out(x)
         return x
+
 
 class DACDecoderWrapper(nn.Module):
     def __init__(self, latent_dim, out_channels=1, **kwargs):
@@ -385,12 +683,15 @@ class DACDecoderWrapper(nn.Module):
 
         from dac.model.dac import Decoder as DACDecoder
 
-        self.decoder = DACDecoder(**kwargs, input_channel = latent_dim, d_out=out_channels)
+        self.decoder = DACDecoder(
+            **kwargs, input_channel=latent_dim, d_out=out_channels
+        )
 
         self.latent_dim = latent_dim
 
     def forward(self, x):
         return self.decoder(x)
+
 
 class AudioAutoencoder(nn.Module):
     def __init__(
@@ -403,9 +704,9 @@ class AudioAutoencoder(nn.Module):
         io_channels=2,
         bottleneck: Bottleneck = None,
         pretransform: Pretransform = None,
-        in_channels = None,
-        out_channels = None,
-        soft_clip = False
+        in_channels=None,
+        out_channels=None,
+        soft_clip=False,
     ):
         super().__init__()
 
@@ -434,11 +735,18 @@ class AudioAutoencoder(nn.Module):
         self.pretransform = pretransform
 
         self.soft_clip = soft_clip
- 
+
         self.is_discrete = self.bottleneck is not None and self.bottleneck.is_discrete
 
-    def encode(self, audio, skip_bottleneck: bool = False, return_info=False, skip_pretransform=False, iterate_batch=False, **kwargs):
-
+    def encode(
+        self,
+        audio,
+        skip_bottleneck: bool = False,
+        return_info=False,
+        skip_pretransform=False,
+        iterate_batch=False,
+        **kwargs,
+    ):
         info = {}
 
         if self.pretransform is not None and not skip_pretransform:
@@ -446,7 +754,7 @@ class AudioAutoencoder(nn.Module):
                 if iterate_batch:
                     audios = []
                     for i in range(audio.shape[0]):
-                        audios.append(self.pretransform.encode(audio[i:i+1]))
+                        audios.append(self.pretransform.encode(audio[i : i + 1]))
                     audio = torch.cat(audios, dim=0)
                 else:
                     audio = self.pretransform.encode(audio)
@@ -455,7 +763,7 @@ class AudioAutoencoder(nn.Module):
                     if iterate_batch:
                         audios = []
                         for i in range(audio.shape[0]):
-                            audios.append(self.pretransform.encode(audio[i:i+1]))
+                            audios.append(self.pretransform.encode(audio[i : i + 1]))
                         audio = torch.cat(audios, dim=0)
                     else:
                         audio = self.pretransform.encode(audio)
@@ -464,7 +772,7 @@ class AudioAutoencoder(nn.Module):
             if iterate_batch:
                 latents = []
                 for i in range(audio.shape[0]):
-                    latents.append(self.encoder(audio[i:i+1]))
+                    latents.append(self.encoder(audio[i : i + 1]))
                 latents = torch.cat(latents, dim=0)
             else:
                 latents = self.encoder(audio)
@@ -475,22 +783,25 @@ class AudioAutoencoder(nn.Module):
 
         if self.bottleneck is not None and not skip_bottleneck:
             # TODO: Add iterate batch logic, needs to merge the info dicts
-            latents, bottleneck_info = self.bottleneck.encode(latents, return_info=True, **kwargs)
+            latents, bottleneck_info = self.bottleneck.encode(
+                latents, return_info=True, **kwargs
+            )
 
             info.update(bottleneck_info)
-        
+
         if return_info:
             return latents, info
 
         return latents
 
-    def decode(self, latents, skip_bottleneck: bool = False, iterate_batch=False, **kwargs):
-
+    def decode(
+        self, latents, skip_bottleneck: bool = False, iterate_batch=False, **kwargs
+    ):
         if self.bottleneck is not None and not skip_bottleneck:
             if iterate_batch:
                 decoded = []
                 for i in range(latents.shape[0]):
-                    decoded.append(self.bottleneck.decode(latents[i:i+1]))
+                    decoded.append(self.bottleneck.decode(latents[i : i + 1]))
                 latents = torch.cat(decoded, dim=0)
             else:
                 latents = self.bottleneck.decode(latents)
@@ -498,7 +809,7 @@ class AudioAutoencoder(nn.Module):
         if iterate_batch:
             decoded = []
             for i in range(latents.shape[0]):
-                decoded.append(self.decoder(latents[i:i+1]))
+                decoded.append(self.decoder(latents[i : i + 1]))
             decoded = torch.cat(decoded, dim=0)
         else:
             decoded = self.decoder(latents, **kwargs)
@@ -508,7 +819,7 @@ class AudioAutoencoder(nn.Module):
                 if iterate_batch:
                     decodeds = []
                     for i in range(decoded.shape[0]):
-                        decodeds.append(self.pretransform.decode(decoded[i:i+1]))
+                        decodeds.append(self.pretransform.decode(decoded[i : i + 1]))
                     decoded = torch.cat(decodeds, dim=0)
                 else:
                     decoded = self.pretransform.decode(decoded)
@@ -517,53 +828,58 @@ class AudioAutoencoder(nn.Module):
                     if iterate_batch:
                         decodeds = []
                         for i in range(latents.shape[0]):
-                            decodeds.append(self.pretransform.decode(decoded[i:i+1]))
+                            decodeds.append(
+                                self.pretransform.decode(decoded[i : i + 1])
+                            )
                         decoded = torch.cat(decodeds, dim=0)
                     else:
                         decoded = self.pretransform.decode(decoded)
 
         if self.soft_clip:
             decoded = torch.tanh(decoded)
-        
+
         return decoded
-          
+
     def decode_tokens(self, tokens, **kwargs):
-        '''
+        """
         Decode discrete tokens to audio
         Only works with discrete autoencoders
-        '''
+        """
 
-        assert isinstance(self.bottleneck, DiscreteBottleneck), "decode_tokens only works with discrete autoencoders"
+        assert isinstance(
+            self.bottleneck, DiscreteBottleneck
+        ), "decode_tokens only works with discrete autoencoders"
 
         latents = self.bottleneck.decode_tokens(tokens, **kwargs)
 
         return self.decode(latents, **kwargs)
-        
-    
+
     def preprocess_audio_for_encoder(self, audio, in_sr):
-        '''
+        """
         Preprocess single audio tensor (Channels x Length) to be compatible with the encoder.
         If the model is mono, stereo audio will be converted to mono.
         Audio will be silence-padded to be a multiple of the model's downsampling ratio.
-        Audio will be resampled to the model's sample rate. 
+        Audio will be resampled to the model's sample rate.
         The output will have batch size 1 and be shape (1 x Channels x Length)
-        '''
+        """
         return self.preprocess_audio_list_for_encoder([audio], [in_sr])
 
     def preprocess_audio_list_for_encoder(self, audio_list, in_sr_list):
-        '''
-        Preprocess a [list] of audio (Channels x Length) into a batch tensor to be compatable with the encoder. 
-        The audio in that list can be of different lengths and channels. 
+        """
+        Preprocess a [list] of audio (Channels x Length) into a batch tensor to be compatable with the encoder.
+        The audio in that list can be of different lengths and channels.
         in_sr can be an integer or list. If it's an integer it will be assumed it is the input sample_rate for every audio.
-        All audio will be resampled to the model's sample rate. 
-        Audio will be silence-padded to the longest length, and further padded to be a multiple of the model's downsampling ratio. 
-        If the model is mono, all audio will be converted to mono. 
+        All audio will be resampled to the model's sample rate.
+        Audio will be silence-padded to the longest length, and further padded to be a multiple of the model's downsampling ratio.
+        If the model is mono, all audio will be converted to mono.
         The output will be a tensor of shape (Batch x Channels x Length)
-        '''
+        """
         batch_size = len(audio_list)
         if isinstance(in_sr_list, int):
-            in_sr_list = [in_sr_list]*batch_size
-        assert len(in_sr_list) == batch_size, "list of sample rates must be the same length of audio_list"
+            in_sr_list = [in_sr_list] * batch_size
+        assert (
+            len(in_sr_list) == batch_size
+        ), "list of sample rates must be the same length of audio_list"
         new_audio = []
         max_length = 0
         # resample & find the max length
@@ -576,7 +892,9 @@ class AudioAutoencoder(nn.Module):
             elif len(audio.shape) == 1:
                 # Mono signal, channel dimension is missing, unsqueeze it in
                 audio = audio.unsqueeze(0)
-            assert len(audio.shape)==2, "Audio should be shape (Channels x Length) with no batch dimension" 
+            assert (
+                len(audio.shape) == 2
+            ), "Audio should be shape (Channels x Length) with no batch dimension"
             # Resample audio
             if in_sr != self.sample_rate:
                 resample_tf = T.Resample(in_sr, self.sample_rate).to(audio.device)
@@ -585,28 +903,37 @@ class AudioAutoencoder(nn.Module):
             if audio.shape[-1] > max_length:
                 max_length = audio.shape[-1]
         # Pad every audio to the same length, multiple of model's downsampling ratio
-        padded_audio_length = max_length + (self.min_length - (max_length % self.min_length)) % self.min_length
+        padded_audio_length = (
+            max_length
+            + (self.min_length - (max_length % self.min_length)) % self.min_length
+        )
         for i in range(batch_size):
             # Pad it & if necessary, mixdown/duplicate stereo/mono channels to support model
-            new_audio[i] = prepare_audio(new_audio[i], in_sr=in_sr, target_sr=in_sr, target_length=padded_audio_length, 
-                target_channels=self.in_channels, device=new_audio[i].device).squeeze(0)
-        # convert to tensor 
-        return torch.stack(new_audio) 
+            new_audio[i] = prepare_audio(
+                new_audio[i],
+                in_sr=in_sr,
+                target_sr=in_sr,
+                target_length=padded_audio_length,
+                target_channels=self.in_channels,
+                device=new_audio[i].device,
+            ).squeeze(0)
+        # convert to tensor
+        return torch.stack(new_audio)
 
     def encode_audio(self, audio, chunked=False, overlap=32, chunk_size=128, **kwargs):
-        '''
+        """
         Encode audios into latents. Audios should already be preprocesed by preprocess_audio_for_encoder.
         If chunked is True, split the audio into chunks of a given maximum size chunk_size, with given overlap.
-        Overlap and chunk_size params are both measured in number of latents (not audio samples) 
-        # and therefore you likely could use the same values with decode_audio. 
-        A overlap of zero will cause discontinuity artefacts. Overlap should be => receptive field size. 
+        Overlap and chunk_size params are both measured in number of latents (not audio samples)
+        # and therefore you likely could use the same values with decode_audio.
+        A overlap of zero will cause discontinuity artefacts. Overlap should be => receptive field size.
         Every autoencoder will have a different receptive field size, and thus ideal overlap.
         You can determine it empirically by diffing unchunked vs chunked output and looking at maximum diff.
         The final chunk may have a longer overlap in order to keep chunk_size consistent for all chunks.
         Smaller chunk_size uses less memory, but more compute.
         The chunk_size vs memory tradeoff isn't linear, and possibly depends on the GPU and CUDA version
         For example, on a A6000 chunk_size 128 is overall faster than 256 and 512 even though it has more chunks
-        '''
+        """
         if not chunked:
             # default behavior. Encode the entire audio in parallel
             return self.encode(audio, **kwargs)
@@ -614,18 +941,18 @@ class AudioAutoencoder(nn.Module):
             # CHUNKED ENCODING
             # samples_per_latent is just the downsampling ratio (which is also the upsampling ratio)
             samples_per_latent = self.downsampling_ratio
-            total_size = audio.shape[2] # in samples
+            total_size = audio.shape[2]  # in samples
             batch_size = audio.shape[0]
-            chunk_size *= samples_per_latent # converting metric in latents to samples
-            overlap *= samples_per_latent # converting metric in latents to samples
+            chunk_size *= samples_per_latent  # converting metric in latents to samples
+            overlap *= samples_per_latent  # converting metric in latents to samples
             hop_size = chunk_size - overlap
             chunks = []
             for i in range(0, total_size - chunk_size + 1, hop_size):
-                chunk = audio[:,:,i:i+chunk_size]
+                chunk = audio[:, :, i : i + chunk_size]
                 chunks.append(chunk)
-            if i+chunk_size != total_size:
+            if i + chunk_size != total_size:
                 # Final chunk
-                chunk = audio[:,:,-chunk_size:]
+                chunk = audio[:, :, -chunk_size:]
                 chunks.append(chunk)
             chunks = torch.stack(chunks)
             num_chunks = chunks.shape[0]
@@ -634,13 +961,15 @@ class AudioAutoencoder(nn.Module):
             # However, the audio should've been padded to a multiple of samples_per_latent by now.
             y_size = total_size // samples_per_latent
             # Create an empty latent, we will populate it with chunks as we encode them
-            y_final = torch.zeros((batch_size,self.latent_dim,y_size)).to(audio.device)
+            y_final = torch.zeros((batch_size, self.latent_dim, y_size)).to(
+                audio.device
+            )
             for i in range(num_chunks):
-                x_chunk = chunks[i,:]
+                x_chunk = chunks[i, :]
                 # encode the chunk
                 y_chunk = self.encode(x_chunk)
                 # figure out where to put the audio along the time domain
-                if i == num_chunks-1:
+                if i == num_chunks - 1:
                     # final chunk always goes at the end
                     t_end = y_size
                     t_start = t_end - y_chunk.shape[2]
@@ -648,33 +977,35 @@ class AudioAutoencoder(nn.Module):
                     t_start = i * hop_size // samples_per_latent
                     t_end = t_start + chunk_size // samples_per_latent
                 #  remove the edges of the overlaps
-                ol = overlap//samples_per_latent//2
+                ol = overlap // samples_per_latent // 2
                 chunk_start = 0
                 chunk_end = y_chunk.shape[2]
                 if i > 0:
                     # no overlap for the start of the first chunk
                     t_start += ol
                     chunk_start += ol
-                if i < num_chunks-1:
+                if i < num_chunks - 1:
                     # no overlap for the end of the last chunk
                     t_end -= ol
                     chunk_end -= ol
                 # paste the chunked audio into our y_final output audio
-                y_final[:,:,t_start:t_end] = y_chunk[:,:,chunk_start:chunk_end]
+                y_final[:, :, t_start:t_end] = y_chunk[:, :, chunk_start:chunk_end]
             return y_final
-    
-    def decode_audio(self, latents, chunked=False, overlap=32, chunk_size=128, **kwargs):
-        '''
-        Decode latents to audio. 
-        If chunked is True, split the latents into chunks of a given maximum size chunk_size, with given overlap, both of which are measured in number of latents. 
-        A overlap of zero will cause discontinuity artefacts. Overlap should be => receptive field size. 
+
+    def decode_audio(
+        self, latents, chunked=False, overlap=32, chunk_size=128, **kwargs
+    ):
+        """
+        Decode latents to audio.
+        If chunked is True, split the latents into chunks of a given maximum size chunk_size, with given overlap, both of which are measured in number of latents.
+        A overlap of zero will cause discontinuity artefacts. Overlap should be => receptive field size.
         Every autoencoder will have a different receptive field size, and thus ideal overlap.
         You can determine it empirically by diffing unchunked vs chunked audio and looking at maximum diff.
         The final chunk may have a longer overlap in order to keep chunk_size consistent for all chunks.
         Smaller chunk_size uses less memory, but more compute.
         The chunk_size vs memory tradeoff isn't linear, and possibly depends on the GPU and CUDA version
         For example, on a A6000 chunk_size 128 is overall faster than 256 and 512 even though it has more chunks
-        '''
+        """
 
         model_dtype = next(self.parameters()).dtype
         latents = latents.to(model_dtype)
@@ -689,11 +1020,11 @@ class AudioAutoencoder(nn.Module):
             batch_size = latents.shape[0]
             chunks = []
             for i in range(0, total_size - chunk_size + 1, hop_size):
-                chunk = latents[:,:,i:i+chunk_size]
+                chunk = latents[:, :, i : i + chunk_size]
                 chunks.append(chunk)
-            if i+chunk_size != total_size:
+            if i + chunk_size != total_size:
                 # Final chunk
-                chunk = latents[:,:,-chunk_size:]
+                chunk = latents[:, :, -chunk_size:]
                 chunks.append(chunk)
             chunks = torch.stack(chunks)
             num_chunks = chunks.shape[0]
@@ -701,13 +1032,15 @@ class AudioAutoencoder(nn.Module):
             samples_per_latent = self.downsampling_ratio
             # Create an empty waveform, we will populate it with chunks as decode them
             y_size = total_size * samples_per_latent
-            y_final = torch.zeros((batch_size,self.out_channels,y_size)).to(latents.device)
+            y_final = torch.zeros((batch_size, self.out_channels, y_size)).to(
+                latents.device
+            )
             for i in range(num_chunks):
-                x_chunk = chunks[i,:]
+                x_chunk = chunks[i, :]
                 # decode the chunk
                 y_chunk = self.decode(x_chunk)
                 # figure out where to put the audio along the time domain
-                if i == num_chunks-1:
+                if i == num_chunks - 1:
                     # final chunk always goes at the end
                     t_end = y_size
                     t_start = t_end - y_chunk.shape[2]
@@ -715,29 +1048,29 @@ class AudioAutoencoder(nn.Module):
                     t_start = i * hop_size * samples_per_latent
                     t_end = t_start + chunk_size * samples_per_latent
                 #  remove the edges of the overlaps
-                ol = (overlap//2) * samples_per_latent
+                ol = (overlap // 2) * samples_per_latent
                 chunk_start = 0
                 chunk_end = y_chunk.shape[2]
                 if i > 0:
                     # no overlap for the start of the first chunk
                     t_start += ol
                     chunk_start += ol
-                if i < num_chunks-1:
+                if i < num_chunks - 1:
                     # no overlap for the end of the last chunk
                     t_end -= ol
                     chunk_end -= ol
                 # paste the chunked audio into our y_final output audio
-                y_final[:,:,t_start:t_end] = y_chunk[:,:,chunk_start:chunk_end]
+                y_final[:, :, t_start:t_end] = y_chunk[:, :, chunk_start:chunk_end]
             return y_final
 
-    
+
 class DiffusionAutoencoder(AudioAutoencoder):
     def __init__(
         self,
         diffusion: ConditionedDiffusionModel,
         diffusion_downsampling_ratio,
         *args,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(*args, **kwargs)
 
@@ -752,7 +1085,6 @@ class DiffusionAutoencoder(AudioAutoencoder):
                     param *= 0.5
 
     def decode(self, latents, steps=100):
-
         upsampled_length = latents.shape[2] * self.downsampling_ratio
 
         if self.bottleneck is not None:
@@ -760,12 +1092,14 @@ class DiffusionAutoencoder(AudioAutoencoder):
 
         if self.decoder is not None:
             latents = self.decode(latents)
-    
+
         # Upsample latents to match diffusion length
         if latents.shape[2] != upsampled_length:
-            latents = F.interpolate(latents, size=upsampled_length, mode='nearest')
+            latents = F.interpolate(latents, size=upsampled_length, mode="nearest")
 
-        noise = torch.randn(latents.shape[0], self.io_channels, upsampled_length, device=latents.device)
+        noise = torch.randn(
+            latents.shape[0], self.io_channels, upsampled_length, device=latents.device
+        )
         decoded = sample(self.diffusion, noise, steps, 0, input_concat_cond=latents)
 
         if self.pretransform is not None:
@@ -776,27 +1110,28 @@ class DiffusionAutoencoder(AudioAutoencoder):
                     decoded = self.pretransform.decode(decoded)
 
         return decoded
-        
+
+
 # AE factories
 
+
 def create_encoder_from_config(encoder_config: Dict[str, Any]):
-    encoder_type = encoder_config.get("type", None)
+    encoder_type = encoder_config.get("type")
     assert encoder_type is not None, "Encoder type must be specified"
 
     if encoder_type == "oobleck":
-        encoder = OobleckEncoder(
-            **encoder_config["config"]
-        )
-    
+        encoder = OobleckEncoder(**encoder_config["config"])
+
     elif encoder_type == "seanet":
         from encodec.modules import SEANetEncoder
+
         seanet_encoder_config = encoder_config["config"]
 
-        #SEANet encoder expects strides in reverse order
-        seanet_encoder_config["ratios"] = list(reversed(seanet_encoder_config.get("ratios", [2, 2, 2, 2, 2])))
-        encoder = SEANetEncoder(
-            **seanet_encoder_config
+        # SEANet encoder expects strides in reverse order
+        seanet_encoder_config["ratios"] = list(
+            reversed(seanet_encoder_config.get("ratios", [2, 2, 2, 2, 2]))
         )
+        encoder = SEANetEncoder(**seanet_encoder_config)
     elif encoder_type == "dac":
         dac_config = encoder_config["config"]
 
@@ -806,16 +1141,12 @@ def create_encoder_from_config(encoder_config: Dict[str, Any]):
 
         local_attn_config = encoder_config["config"]
 
-        encoder = TransformerEncoder1D(
-            **local_attn_config
-        )
+        encoder = TransformerEncoder1D(**local_attn_config)
     elif encoder_type == "taae":
-        encoder = TAAEEncoder(
-            **encoder_config["config"]
-        )
+        encoder = TAAEEncoder(**encoder_config["config"])
     else:
         raise ValueError(f"Unknown encoder type {encoder_type}")
-    
+
     requires_grad = encoder_config.get("requires_grad", True)
     if not requires_grad:
         for param in encoder.parameters():
@@ -823,20 +1154,17 @@ def create_encoder_from_config(encoder_config: Dict[str, Any]):
 
     return encoder
 
+
 def create_decoder_from_config(decoder_config: Dict[str, Any]):
-    decoder_type = decoder_config.get("type", None)
+    decoder_type = decoder_config.get("type")
     assert decoder_type is not None, "Decoder type must be specified"
 
     if decoder_type == "oobleck":
-        decoder = OobleckDecoder(
-            **decoder_config["config"]
-        )
+        decoder = OobleckDecoder(**decoder_config["config"])
     elif decoder_type == "seanet":
         from encodec.modules import SEANetDecoder
 
-        decoder = SEANetDecoder(
-            **decoder_config["config"]
-        )
+        decoder = SEANetDecoder(**decoder_config["config"])
     elif decoder_type == "dac":
         dac_config = decoder_config["config"]
 
@@ -846,16 +1174,12 @@ def create_decoder_from_config(decoder_config: Dict[str, Any]):
 
         local_attn_config = decoder_config["config"]
 
-        decoder = TransformerDecoder1D(
-            **local_attn_config
-        )
+        decoder = TransformerDecoder1D(**local_attn_config)
     elif decoder_type == "taae":
-        decoder = TAAEDecoder(
-            **decoder_config["config"]
-        )
+        decoder = TAAEDecoder(**decoder_config["config"])
     else:
         raise ValueError(f"Unknown decoder type {decoder_type}")
-    
+
     requires_grad = decoder_config.get("requires_grad", True)
     if not requires_grad:
         for param in decoder.parameters():
@@ -863,8 +1187,8 @@ def create_decoder_from_config(decoder_config: Dict[str, Any]):
 
     return decoder
 
+
 def create_autoencoder_from_config(config: Dict[str, Any]):
-    
     ae_config = config["model"]
 
     encoder = create_encoder_from_config(ae_config["encoder"])
@@ -875,10 +1199,12 @@ def create_autoencoder_from_config(config: Dict[str, Any]):
     latent_dim = ae_config.get("latent_dim", None)
     assert latent_dim is not None, "latent_dim must be specified in model config"
     downsampling_ratio = ae_config.get("downsampling_ratio", None)
-    assert downsampling_ratio is not None, "downsampling_ratio must be specified in model config"
+    assert (
+        downsampling_ratio is not None
+    ), "downsampling_ratio must be specified in model config"
     io_channels = ae_config.get("io_channels", None)
     assert io_channels is not None, "io_channels must be specified in model config"
-    sample_rate = config.get("sample_rate", None)
+    sample_rate = config.get("sample_rate")
     assert sample_rate is not None, "sample_rate must be specified in model config"
 
     in_channels = ae_config.get("in_channels", None)
@@ -905,11 +1231,67 @@ def create_autoencoder_from_config(config: Dict[str, Any]):
         pretransform=pretransform,
         in_channels=in_channels,
         out_channels=out_channels,
-        soft_clip=soft_clip
+        soft_clip=soft_clip,
     )
 
-def create_diffAE_from_config(config: Dict[str, Any]):
+
+class HyperEncoder(nn.Module):
+    def __init__(
+        self,
+        encoder,
+        decoder,
+        latent_dim,
+        bottleneck,
+        in_channels,
+        out_channels,
+    ):
+        super().__init__()
+
+        self.encoder = encoder
+        self.decoder = decoder
+        self.latent_dim = latent_dim
+        self.bottleneck = bottleneck
+        self.in_channels = in_channels
+        self.out_channels = out_channels
     
+    def encode(self, audio, return_info=False):
+        inner_latents = self.encoder(audio)
+        outer_latents = self.bottleneck(inner_latents)
+        return outer_latents
+    
+    def decode(self, outer_latents, return_info=False):
+        inner_latents = self.bottleneck.decode(outer_latents)
+        return self.decoder(inner_latents)
+    
+
+def create_hyperencoder_from_config(config: Dict[str, Any]):
+    ae_config = config["model"]
+
+    encoder = create_encoder_from_config(ae_config["encoder"])
+    decoder = create_decoder_from_config(ae_config["decoder"])
+
+    bottleneck = ae_config.get("bottleneck", None)
+
+    latent_dim = ae_config.get("latent_dim", None)
+    assert latent_dim is not None, "latent_dim must be specified in model config"
+    
+    in_channels = ae_config.get("in_channels", None)
+    out_channels = ae_config.get("out_channels", None)
+    
+    if bottleneck is not None:
+        bottleneck = create_bottleneck_from_config(bottleneck)
+
+    return HyperEncoder(
+        encoder,
+        decoder,
+        latent_dim=latent_dim,
+        bottleneck=bottleneck,
+        in_channels=in_channels,
+        out_channels=out_channels,
+    )
+
+
+def create_diffAE_from_config(config: Dict[str, Any]):
     diffae_config = config["model"]
 
     if "encoder" in diffae_config:
@@ -934,7 +1316,9 @@ def create_diffAE_from_config(config: Dict[str, Any]):
     latent_dim = diffae_config.get("latent_dim", None)
     assert latent_dim is not None, "latent_dim must be specified in model config"
     downsampling_ratio = diffae_config.get("downsampling_ratio", None)
-    assert downsampling_ratio is not None, "downsampling_ratio must be specified in model config"
+    assert (
+        downsampling_ratio is not None
+    ), "downsampling_ratio must be specified in model config"
     io_channels = diffae_config.get("io_channels", None)
     assert io_channels is not None, "io_channels must be specified in model config"
     sample_rate = config.get("sample_rate", None)
@@ -950,12 +1334,16 @@ def create_diffAE_from_config(config: Dict[str, Any]):
     if bottleneck is not None:
         bottleneck = create_bottleneck_from_config(bottleneck)
 
-    diffusion_downsampling_ratio = None,
+    diffusion_downsampling_ratio = (None,)
 
     if diffusion_model_type == "DAU1d":
-        diffusion_downsampling_ratio = np.prod(diffae_config["diffusion"]["config"]["strides"])
+        diffusion_downsampling_ratio = np.prod(
+            diffae_config["diffusion"]["config"]["strides"]
+        )
     elif diffusion_model_type == "adp_1d":
-        diffusion_downsampling_ratio = np.prod(diffae_config["diffusion"]["config"]["factors"])
+        diffusion_downsampling_ratio = np.prod(
+            diffae_config["diffusion"]["config"]["factors"]
+        )
     elif diffusion_model_type == "dit":
         diffusion_downsampling_ratio = 1
 
@@ -969,5 +1357,5 @@ def create_diffAE_from_config(config: Dict[str, Any]):
         downsampling_ratio=downsampling_ratio,
         diffusion_downsampling_ratio=diffusion_downsampling_ratio,
         bottleneck=bottleneck,
-        pretransform=pretransform
+        pretransform=pretransform,
     )

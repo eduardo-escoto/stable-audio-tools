@@ -337,7 +337,7 @@ class FSQBottleneck(DiscreteBottleneck):
 
         self.noise_augment_dim = noise_augment_dim
 
-        self.quantizer = FSQ(**kwargs, allowed_dtypes=[torch.float16, torch.float32, torch.float64])
+        self.quantizer = FSQ(**kwargs, channel_first=True, allowed_dtypes=[torch.float16, torch.float32, torch.float64])
 
     def encode(self, x, return_info=False):
         info = {}
@@ -345,14 +345,14 @@ class FSQBottleneck(DiscreteBottleneck):
         orig_dtype = x.dtype
         x = x.float()
 
-        x = rearrange(x, "b c n -> b n c")
+        # x = rearrange(x, "b c n -> b n c")
         x, indices = self.quantizer(x)
-        x = rearrange(x, "b n c -> b c n")
+        # x = rearrange(x, "b n c -> b c n")
 
         x = x.to(orig_dtype)
 
         # Reorder indices to match the expected format
-        indices = rearrange(indices, "b n q -> b q n")
+        # indices = rearrange(indices, "b n q -> b q n") 
 
         info["quantizer_indices"] = indices
 
