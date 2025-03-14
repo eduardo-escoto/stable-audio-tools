@@ -8,7 +8,6 @@ from copy import deepcopy
 from typing import Optional, Literal
 
 from ..models.autoencoders import (
-    HyperEncoder,
     AudioAutoencoder,
     fold_channels_into_batch,
     unfold_channels_from_batch,
@@ -50,6 +49,8 @@ from .utils import (
     logger_project_name,
 )
 
+from ..data.dataset import PreEncodedDataset
+
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 from ..interface.aeiou import audio_spectrogram_image, tokens_spectrogram_image
 from ema_pytorch import EMA
@@ -64,28 +65,6 @@ def trim_to_shortest(a, b):
     elif b.shape[-1] > a.shape[-1]:
         return a, b[:, :, : a.shape[-1]]
     return a, b
-
-
-class HyperencoderTrainingWrapper(pl.LightningModule):
-    def __init__(
-        self,
-        hyperencoder: HyperEncoder,
-        loss_config: Optional[dict] = None,
-        eval_loss_config: Optional[dict] = None,
-        optimizer_configs: Optional[dict] = None,
-        lr: float = 1e-4,
-        warmup_steps: int = 0,
-        warmup_mode: Literal["adv", "full"] = "adv",
-        encoder_freeze_on_warmup: bool = False,
-        use_ema: bool = True,
-        ema_copy=None,
-        clip_grad_norm=0.0,
-    ):
-        super().__init__()
-        self.hyperencoder = hyperencoder
-        
-    
-
 
 class AutoencoderTrainingWrapper(pl.LightningModule):
     def __init__(

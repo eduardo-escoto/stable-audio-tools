@@ -1234,63 +1234,6 @@ def create_autoencoder_from_config(config: Dict[str, Any]):
         soft_clip=soft_clip,
     )
 
-
-class HyperEncoder(nn.Module):
-    def __init__(
-        self,
-        encoder,
-        decoder,
-        latent_dim,
-        bottleneck,
-        in_channels,
-        out_channels,
-    ):
-        super().__init__()
-
-        self.encoder = encoder
-        self.decoder = decoder
-        self.latent_dim = latent_dim
-        self.bottleneck = bottleneck
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-    
-    def encode(self, audio, return_info=False):
-        inner_latents = self.encoder(audio)
-        outer_latents = self.bottleneck(inner_latents)
-        return outer_latents
-    
-    def decode(self, outer_latents, return_info=False):
-        inner_latents = self.bottleneck.decode(outer_latents)
-        return self.decoder(inner_latents)
-    
-
-def create_hyperencoder_from_config(config: Dict[str, Any]):
-    ae_config = config["model"]
-
-    encoder = create_encoder_from_config(ae_config["encoder"])
-    decoder = create_decoder_from_config(ae_config["decoder"])
-
-    bottleneck = ae_config.get("bottleneck", None)
-
-    latent_dim = ae_config.get("latent_dim", None)
-    assert latent_dim is not None, "latent_dim must be specified in model config"
-    
-    in_channels = ae_config.get("in_channels", None)
-    out_channels = ae_config.get("out_channels", None)
-    
-    if bottleneck is not None:
-        bottleneck = create_bottleneck_from_config(bottleneck)
-
-    return HyperEncoder(
-        encoder,
-        decoder,
-        latent_dim=latent_dim,
-        bottleneck=bottleneck,
-        in_channels=in_channels,
-        out_channels=out_channels,
-    )
-
-
 def create_diffAE_from_config(config: Dict[str, Any]):
     diffae_config = config["model"]
 
