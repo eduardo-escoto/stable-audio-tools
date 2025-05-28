@@ -33,7 +33,7 @@ setup(
         'tqdm',
         'transformers',
         'v-diffusion-pytorch==0.0.2',
-        'vector-quantize-pytorch==1.14.41',
+        'vector-quantize-pytorch==1.22.16',
         'wandb==0.15.4',
         'webdataset==0.2.100',
         'x-transformers<1.27.0'
