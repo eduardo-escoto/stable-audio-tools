@@ -1,215 +1,32 @@
-import os
+import argparse
+import gc
 import json
-from json import dump as json_dump
+from pathlib import Path
 
-from einops import rearrange
-
-import torch
+import numpy as np
 import pytorch_lightning as pl
-from safetensors.torch import save_file as sf_save_file
-from stable_audio_tools import get_pretrained_model
-from prefigure.prefigure import get_all_args
-from stable_audio_tools.models import create_model_from_config
-from pytorch_lightning.callbacks import Callback, BasePredictionWriter
+import torch
+from torch.nn import functional as F
+
 from stable_audio_tools.data.dataset import create_dataloader_from_config
-from stable_audio_tools.models.utils import (
-    load_ckpt_state_dict,
-)
-from stable_audio_tools.training.utils import copy_state_dict
-
-import torchaudio
+from stable_audio_tools.models.factory import create_model_from_config
+from stable_audio_tools.models.pretrained import get_pretrained_model
+from stable_audio_tools.models.utils import load_ckpt_state_dict, copy_state_dict
 
 
-def trim_to_shortest(a, b):
-    """Trim the longer of two tensors to the length of the shorter one."""
-    if a.shape[-1] > b.shape[-1]:
-        return a[:, :, : b.shape[-1]], b
-    elif b.shape[-1] > a.shape[-1]:
-        return a, b[:, :, : a.shape[-1]]
-    return a, b
-
-
-class PreEncodePipeline(pl.LightningModule):
-    def __init__(
-        self,
-        pretransform,  # dataset,
-        model_config,
-        dataset_config,
-    ):
-        super().__init__()
-        self.pretransform = pretransform
-        self.model_config = model_config
-        self.dataset_config = dataset_config
-        self.prediction_step_outputs = []
-
-    def forward(self, x):
-        raise NotImplementedError(
-            "Pre-encoding is not trainable so forward is not needed"
-        )
-
-    def training_step(self, batch, batch_idx):
-        raise NotImplementedError("Pre-encoding is not a training task")
-
-    def validation_step(self, batch, batch_idx):
-        raise NotImplementedError("Pre-encoding is not a validation task")
-
-    def predict_step(self, batch, batch_idx, dataloader_idx=None):
-        # self.print(f"Predicting batch {batch_idx} from dataloader {dataloader_idx}")
-        # batches should have audio and info, where info has a bunch of metadata
-        reals, infos = batch
-
-        # Remove extra dimension added by WebDataset
-        if reals.ndim == 4 and reals.shape[0] == 1:
-            reals = reals[0]
-
-        if len(reals.shape) == 2:
-            reals = reals.unsqueeze(1)
-
-        pre_enc_info = {
-            "infos": infos,
-            "input_reals": reals,
-        }
-
-        encoder_input = self.pretransform.model.preprocess_audio_list_for_encoder(
-            reals, self.model_config["sample_rate"]
-        )
-        pre_enc_info["processed_input_reals"] = encoder_input
-
-        # if self.force_input_mono and encoder_input.shape[1] > 1:
-        #     encoder_input = encoder_input.mean(dim=1, keepdim=True)
-
-        with torch.no_grad():
-            latents, encoder_info = self.pretransform.encode(
-                encoder_input, return_info=True
-            )
-            pre_enc_info["latents"] = latents
-            pre_enc_info["encoder_infos"] = encoder_info
-
-            decoded = self.pretransform.decode(latents)
-            # Trim output to remove post-padding.
-            decoded, trim_reals = trim_to_shortest(decoded.clone(), reals.clone())
-
-        pre_enc_info["decoded_reals"] = decoded
-        pre_enc_info["trimmed_input_reals"] = trim_reals
-
-        # self.prediction_step_outputs.append(pre_enc_info)
-
-        return pre_enc_info
-
-
-class PreEncodePredictionWriter(BasePredictionWriter):
-    def __init__(self, output_path, write_interval="epoch"):
-        super().__init__(write_interval)
-        self.output_path = output_path
-
-    def write_on_batch_end(
-        self,
-        trainer,
-        pl_module,
-        prediction,
-        batch_indices,
-        batch,
-        batch_idx,
-        dataloader_idx,
-    ):
-        infos = prediction["infos"]
-        input_reals = prediction["input_reals"]
-        processed_input_reals = prediction["processed_input_reals"]
-        latents = prediction["latents"]
-        decoded_reals = prediction["decoded_reals"]
-        trimmed_input_reals = prediction["trimmed_input_reals"]
-        encoder_infos = prediction["encoder_infos"]
-
-        for idx, info in enumerate(infos):
-            out_metadata_dict = {k: v for k, v in info.items() if k != "padding_mask"}
-            out_sf_dict = {
-                "input_reals": input_reals[idx : idx + 1],
-                "processed_input_reals": processed_input_reals[idx : idx + 1],
-                "pre_bottleneck_latents": encoder_infos["pre_bottleneck_latents"][
-                    idx : idx + 1
-                ],
-                "latents": latents[idx : idx + 1],
-                "decoded_reals": decoded_reals[idx : idx + 1],
-                "trimmed_input_reals": trimmed_input_reals[idx : idx + 1],
-                "padding_mask": info["padding_mask"],
-            }
-
-            output_subdir = "/".join(info["relpath"].split("/")[:-1])
-
-            import pathlib
-
-            pathlib.Path(f"{self.output_path}/{output_subdir}").mkdir(
-                parents=True, exist_ok=True
-            )
-
-            fname = info["relpath"].replace(".wav", "").split("/")[-1]
-
-            out_sf_path = f"{self.output_path}/{output_subdir}/{fname}.safetensors"
-            out_metadata_path = f"{self.output_path}/{output_subdir}/{fname}.json"
-
-            sf_save_file(out_sf_dict, out_sf_path)
-
-            with open(out_metadata_path, "w") as f:
-                json_dump(out_metadata_dict, f, indent=4)
-
-            og_trim_audio = rearrange(
-                trimmed_input_reals[idx : idx + 1], "b d n -> d (b n)"
-            )
-            og_trim_audio = (
-                og_trim_audio.to(torch.float32)
-                .clamp(-1, 1)
-                .mul(32767)
-                .to(torch.int16)
-                .cpu()
-            )
-
-            recon_audio = rearrange(decoded_reals[idx : idx + 1], "b d n -> d (b n)")
-            recon_audio = (
-                recon_audio.to(torch.float32)
-                .clamp(-1, 1)
-                .mul(32767)
-                .to(torch.int16)
-                .cpu()
-            )
-
-            torchaudio.save(
-                f"{self.output_path}/{output_subdir}/{fname}_original_trimmed.wav",
-                og_trim_audio,
-                info["sample_rate"],
-            )
-            torchaudio.save(
-                f"{self.output_path}/{output_subdir}/{fname}_reconstructed.wav",
-                recon_audio,
-                info["sample_rate"],
-            )
-
-
-def load_model(
-    model_config=None,
-    model_ckpt_path=None,
-    pretrained_name=None,
-    pretransform_ckpt_path=None,
-    model_half=False,
-):
+def load_model(model_config=None, model_ckpt_path=None, pretrained_name=None, model_half=False):
     if pretrained_name is not None:
         print(f"Loading pretrained model {pretrained_name}")
         model, model_config = get_pretrained_model(pretrained_name)
 
     elif model_config is not None and model_ckpt_path is not None:
-        print("Creating model from config")
+        print(f"Creating model from config")
         model = create_model_from_config(model_config)
 
-        print("Loading model checkpoint from {model_ckpt_path}")
-        # Load checkpoint
+        print(f"Loading model checkpoint from {model_ckpt_path}")
         copy_state_dict(model, load_ckpt_state_dict(model_ckpt_path))
-        # model.load_state_dict(load_ckpt_state_dict(model_ckpt_path))
 
-    if pretransform_ckpt_path is not None:
-        print(f"Loading pretransform checkpoint from {pretransform_ckpt_path}")
-        model.pretransform.load_state_dict(
-            load_ckpt_state_dict(pretransform_ckpt_path), strict=False
-        )
-        print("Done loading pretransform")
+    model.eval().requires_grad_(False)
 
     if model_half:
         model.to(torch.float16)
@@ -219,97 +36,154 @@ def load_model(
     return model, model_config
 
 
-class ExceptionCallback(Callback):
-    def on_exception(self, trainer, module, err):
-        print(f"{type(err).__name__}: {err}")
-
-
-def main():
-    torch.multiprocessing.set_sharing_strategy("file_system")
-    args = get_all_args(
-        defaults_file="/home/eduardo/Projects/pre_encode_audio/stable-audio-tools/pre_encode_defaults.ini"
-    )
-    seed = args.seed
-
-    # Set a different seed for each process if using SLURM
-    if os.environ.get("SLURM_PROCID") is not None:
-        seed += int(os.environ.get("SLURM_PROCID"))
-
-    pl.seed_everything(seed, workers=True)
-
-    model, model_config = load_model(
-        model_config=args.model_config if args.model_config != "" else None,
-        model_ckpt_path=args.pretrained_ckpt_path
-        if args.pretrained_ckpt_path != ""
-        else None,
-        pretrained_name=args.pretrained_name if args.pretrained_name != "" else None,
-        pretransform_ckpt_path=args.pretransform_ckpt_path
-        if args.pretransform_ckpt_path != ""
-        else None,
+class PreEncodedLatentsInferenceWrapper(pl.LightningModule):
+    def __init__(
+        self, 
+        model,
+        output_path,
+        is_discrete=False,
         model_half=False,
-    )
+        model_config=None,
+        dataset_config=None,
+        sample_size=1920000,
+        args_dict=None
+    ):
+        super().__init__()
+        self.save_hyperparameters(ignore=['model'])
+        self.model = model
+        self.output_path = Path(output_path)
 
-    # Create Dataset
+    def prepare_data(self):
+        # runs on rank 0
+        self.output_path.mkdir(parents=True, exist_ok=True)
+        details_path = self.output_path / "details.json"
+        if not details_path.exists():  # Only save if it doesn't exist
+            details = {
+                "model_config": self.hparams.model_config,
+                "dataset_config": self.hparams.dataset_config,
+                "sample_size": self.hparams.sample_size,
+                "args": self.hparams.args_dict
+            }
+            details_path.write_text(json.dumps(details))
+
+    def setup(self, stage=None):
+        # runs on each device
+        process_dir = self.output_path / str(self.global_rank)
+        process_dir.mkdir(parents=True, exist_ok=True)
+
+    def validation_step(self, batch, batch_idx):
+        audio, metadata = batch
+
+        if audio.ndim == 4 and audio.shape[0] == 1:
+            audio = audio[0]
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+
+        if self.hparams.model_half:
+            audio = audio.to(torch.float16)
+
+        with torch.no_grad():
+            if not self.hparams.is_discrete:
+                latents = self.model.encode(audio)
+            else:
+                _, info = self.model.encode(audio, return_info=True)
+                latents = info[self.model.bottleneck.tokens_id]
+
+        latents = latents.cpu().numpy()
+
+        # Save each sample in the batch
+        for i, latent in enumerate(latents):
+            latent_id = f"{self.global_rank:03d}{batch_idx:06d}{i:04d}"
+
+            # Save latent as numpy file
+            latent_path = self.output_path / str(self.global_rank) / f"{latent_id}.npy"
+            with open(latent_path, "wb") as f:
+                np.save(f, latent)
+
+            md = metadata[i]
+            padding_mask = F.interpolate(
+                md["padding_mask"].unsqueeze(0).unsqueeze(1).float(),
+                size=latent.shape[1],
+                mode="nearest"
+            ).squeeze().int()
+            md["padding_mask"] = padding_mask.cpu().numpy().tolist()
+
+            # Convert tensors in md to serializable types
+            for k, v in md.items():
+                if isinstance(v, torch.Tensor):
+                    md[k] = v.cpu().numpy().tolist()
+
+            # Save metadata to json file
+            metadata_path = self.output_path / str(self.global_rank) / f"{latent_id}.json"
+            with open(metadata_path, "w") as f:
+                json.dump(md, f)
+
+    def configure_optimizers(self):
+        return None
+
+
+def main(args):
+    with open(args.model_config) as f:
+        model_config = json.load(f)
+
     with open(args.dataset_config) as f:
         dataset_config = json.load(f)
 
-    pre_encode_dl = create_dataloader_from_config(
+    model, model_config = load_model(
+        model_config=model_config,
+        model_ckpt_path=args.ckpt_path,
+        model_half=args.model_half
+    )
+
+    data_loader = create_dataloader_from_config(
         dataset_config,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         sample_rate=model_config["sample_rate"],
-        sample_size=model_config["sample_size"],
+        sample_size=args.sample_size,
         audio_channels=model_config.get("audio_channels", 2),
-        shuffle=False,
+        shuffle=args.shuffle
     )
 
-    exc_callback = ExceptionCallback()
-    pred_writer = PreEncodePredictionWriter(args.save_dir, write_interval="batch")
-    # Combine args and config dicts
-    args_dict = vars(args)
-    args_dict.update({"model_config": model_config})
-    args_dict.update({"dataset_config": dataset_config})
-
-    # Set multi-GPU strategy if specified
-    if args.strategy:
-        if args.strategy == "deepspeed":
-            from pytorch_lightning.strategies import DeepSpeedStrategy
-
-            strategy = DeepSpeedStrategy(
-                stage=2,
-                contiguous_gradients=True,
-                overlap_comm=True,
-                reduce_scatter=True,
-                reduce_bucket_size=5e8,
-                allgather_bucket_size=5e8,
-                load_full_weights=True,
-            )
-        else:
-            strategy = args.strategy
-    else:
-        strategy = "ddp_find_unused_parameters_true" if args.num_gpus > 1 else "auto"
+    pl_module = PreEncodedLatentsInferenceWrapper(
+        model=model,
+        output_path=args.output_path,
+        is_discrete=args.is_discrete,
+        model_half=args.model_half,
+        model_config=args.model_config,
+        dataset_config=args.dataset_config,
+        sample_size=args.sample_size,
+        args_dict=vars(args)
+    )
 
     trainer = pl.Trainer(
-        devices="auto",
         accelerator="gpu",
-        precision=args.precision,
-        callbacks=[exc_callback, pred_writer],
-        default_root_dir=args.save_dir,
-        enable_progress_bar=True,
-        strategy=strategy,
-        profiler="simple",
-        reload_dataloaders_every_n_epochs=0,
+        devices="auto",
+        num_nodes = args.num_nodes,
+        strategy=args.strategy,
+        precision="16-true" if args.model_half else "32",
+        max_steps=args.limit_batches if args.limit_batches else -1,
+        logger=False,  # Disable logging since we're just doing inference
+        enable_checkpointing=False,
     )
-    print("Creating pre-encode pipeline")
-    pre_encode_pipeline = PreEncodePipeline(
-        pretransform=model.pretransform,
-        model_config=model_config,
-        dataset_config=dataset_config,
-    )
-
-    print("Starting prediction")
-    trainer.predict(pre_encode_pipeline, pre_encode_dl, return_predictions=False)
-
+    trainer.validate(pl_module, data_loader)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description='Encode audio dataset to VAE latents using PyTorch Lightning')
+    parser.add_argument('--model-config', type=str, help='Path to model config', required=False)
+    parser.add_argument('--ckpt-path', type=str, help='Path to unwrapped autoencoder model checkpoint', required=False)
+    parser.add_argument('--model-half', action='store_true', help='Whether to use half precision')
+    parser.add_argument('--dataset-config', type=str, help='Path to dataset config file', required=True)
+    parser.add_argument('--output-path', type=str, help='Path to output folder', required=True)
+    parser.add_argument('--batch-size', type=int, help='Batch size', default=1)
+    parser.add_argument('--sample-size', type=int, help='Number of audio samples to pad/crop to', default=1320960)
+    parser.add_argument('--is-discrete', action='store_true', help='Whether the model is discrete')
+    parser.add_argument('--num-nodes', type=int, help='Number of GPU nodes', default=1)
+    parser.add_argument('--num-workers', type=int, help='Number of dataloader workers', default=4)
+    parser.add_argument('--strategy', type=str, help='PyTorch Lightning strategy', default='auto')
+    parser.add_argument('--limit-batches', type=int, help='Limit number of batches (optional)', default=None)
+    parser.add_argument('--shuffle', action='store_true', help='Shuffle dataset')
+    args = parser.parse_args()
+    main(args)
