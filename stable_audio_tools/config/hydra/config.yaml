@@ -1,0 +1,52 @@
+# Main Hydra configuration for stable-audio-tools
+# This file defines the default configuration and enables composition
+
+defaults:
+  - model: stable_audio_1_0          # Default model configuration
+  - dataset: local_training          # Default dataset configuration  
+  - _self_                           # Include this config's values
+
+# Experiment identification
+name: stable_audio_experiment
+project: null
+
+# Training parameters (from defaults.ini)
+batch_size: 4
+seed: 42
+
+# PyTorch Lightning trainer configuration
+num_nodes: 1
+strategy: auto
+precision: "16-mixed"
+num_workers: 6
+
+# Checkpointing and validation  
+checkpoint_every: 10000
+val_every: -1
+save_top_k: -1
+
+# Resume and recovery
+recover: false
+ckpt_path: null
+pretrained_ckpt_path: null
+pretransform_ckpt_path: null
+
+# Training optimization
+accum_batches: 1
+gradient_clip_val: 0.0
+
+# Model-specific options
+remove_pretransform_weight_norm: false
+
+# Logging and output
+logger: wandb
+save_dir: "checkpoints/"
+
+# Hydra configuration
+hydra:
+  job:
+    chdir: true  # Change to output directory
+  run:
+    dir: outputs/${name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: multirun/${name}/${now:%Y-%m-%d_%H-%M-%S} 

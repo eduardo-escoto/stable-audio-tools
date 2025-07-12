@@ -1,0 +1,56 @@
+# @package _global_
+# Production Training Experiment - Full-scale model training
+# This demonstrates how to configure a production training run
+
+defaults:
+  - ../config  # Base configuration with default model/dataset
+  - _self_
+
+# Experiment identification
+name: stable_audio_production_v1
+project: stable-audio-production
+
+# Training parameters - optimized for production
+batch_size: 8        # Larger batch size for production
+seed: 42             # Consistent seed
+
+# PyTorch Lightning trainer configuration
+num_nodes: 4         # Multi-node training
+strategy: ddp        # Distributed data parallel
+precision: "bf16-mixed"  # Mixed precision for efficiency
+num_workers: 16      # More workers for data loading
+
+# Checkpointing - production settings
+checkpoint_every: 5000   # Checkpoint every 5000 steps
+val_every: 2000         # Validate every 2000 steps
+save_top_k: 5           # Keep top 5 checkpoints
+
+# Training optimization
+accum_batches: 2        # Gradient accumulation for larger effective batch
+gradient_clip_val: 1.0  # Gradient clipping for stability
+
+# Override training parameters for production
+training:
+  learning_rate: 2e-5   # Conservative learning rate
+  warmup_steps: 1000    # Learning rate warmup
+  use_ema: true         # Use exponential moving averages
+  demo:
+    demo_every: 10000   # Less frequent demos in production
+    demo_steps: 200     # Standard demo steps
+    num_demos: 6        # More demo examples
+
+# Production dataset configuration
+datasets:
+  - id: train_full
+    path: /data/stable-audio/training/full/
+    custom_metadata_module: /data/stable-audio/metadata/production_metadata.py
+  - id: train_augmented
+    path: /data/stable-audio/training/augmented/
+    custom_metadata_module: null
+
+# Logging for production
+logger: wandb
+save_dir: "/checkpoints/production/stable_audio_v1/"
+
+# Recovery settings
+recover: true  # Auto-resume from latest checkpoint 

@@ -1,0 +1,44 @@
+# @package _global_
+# Quick Test Experiment - Fast iteration with small model
+# This is an example of a single-file experiment configuration
+
+defaults:
+  - ../config  # Base configuration with default model/dataset
+  - _self_
+
+# Experiment identification
+name: quick_test_run
+project: stable-audio-research
+
+# Training parameters - optimized for quick testing
+batch_size: 2        # Smaller batch for faster iteration
+seed: 123            # Different seed for this experiment
+
+# PyTorch Lightning trainer configuration
+precision: "32"      # Full precision for debugging
+num_workers: 2       # Fewer workers for debugging
+
+# Checkpointing - more frequent for testing
+checkpoint_every: 1000  # Save every 1000 steps instead of 10000
+save_top_k: 3          # Only keep top 3 checkpoints
+
+# Override model sample size for faster training
+sample_size: 1048576   # Smaller sample size (1M instead of 4M)
+
+# Override training learning rate
+training:
+  learning_rate: 1e-4  # Higher learning rate for faster convergence
+  demo:
+    demo_every: 500    # More frequent demos for testing
+    demo_steps: 50     # Fewer demo steps
+    num_demos: 2       # Fewer demos
+
+# Override dataset path for this experiment
+datasets:
+  - id: test_audio
+    path: /path/to/test/audio/dataset/
+    custom_metadata_module: null  # No custom metadata for testing
+
+# Logging
+logger: tensorboard    # Use tensorboard instead of wandb for local testing
+save_dir: "checkpoints/quick_test/" 

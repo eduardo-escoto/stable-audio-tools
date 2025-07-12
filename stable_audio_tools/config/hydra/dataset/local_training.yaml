@@ -1,0 +1,10 @@
+# @package _global_
+# Local Training Dataset Configuration
+# Converted from stable_audio_tools/configs/dataset_configs/local_training_example.json
+
+dataset_type: audio_dir
+datasets:
+  - id: my_audio
+    path: /path/to/audio/dataset/
+    custom_metadata_module: /path/to/custom_metadata/custom_md_example.py
+random_crop: true 

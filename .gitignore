@@ -162,3 +162,7 @@ cython_debug/
 *.ckpt
 *.wav
 wandb/*
+outputs/
+
+# Cursor rules directory (local customization)
+.cursorrules/
