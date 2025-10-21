@@ -1,9 +1,11 @@
-from pytorch_lightning.loggers import WandbLogger, CometLogger
+import os
+
+import torch
+import wandb
+from lightning.pytorch.loggers import CometLogger, WandbLogger
+
 from ..interface.aeiou import pca_point_cloud
 
-import wandb
-import torch
-import os
 
 def get_rank():
     """Get rank of current process."""
@@ -102,7 +104,7 @@ def logger_project_name(logger) -> str:
         return logger.name
 
 def log_metric(logger, key, value, step=None):
-    from pytorch_lightning.loggers import WandbLogger, CometLogger
+    from lightning.pytorch.loggers import CometLogger, WandbLogger
     if isinstance(logger, WandbLogger):
         logger.experiment.log({key: value})
     elif isinstance(logger, CometLogger):

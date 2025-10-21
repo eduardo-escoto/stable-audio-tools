@@ -1,6 +1,9 @@
+# [build-system]
+# requires = ["setuptools", "wheel"]
+# build-backend = "setuptools.build_meta"
 [build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "stable-audio-tools"
@@ -30,52 +33,43 @@ dependencies = [
     # Core ML frameworks - already using flexible versioning
     "torch>=2.5.1",
     "torchaudio>=2.5.1",
-    
     # Training frameworks - can be unpinned (good deprecation policies)
     "pytorch_lightning>=2.1.0",
     "torchmetrics>=0.11.4",
-    
     # Data handling - pandas 2.x is stable within major version
     "pandas>=2.0.2",
-    
     # General utilities - no version pinning needed (stable APIs)
-    "einops",
-    "einops-exts", 
-    "tqdm",
-    "safetensors",
-    "transformers",
-    "huggingface_hub",
-    
+    "einops>=0.8.1",
+    "einops-exts>=0.0.4",
+    "tqdm>=4.67.1",
+    "safetensors>=0.5.3",
+    "transformers>=4.53.2",
+    "huggingface_hub>=0.33.4",
     # Interface - already using flexible versioning
     "gradio>=5.20.0",
-    
     # Logging and experiment tracking - can be unpinned (stable API)
     "wandb>=0.15.4",
-    
     # Signal processing - can be unpinned (follows semver)
     "PyWavelets>=1.4.1",
-    
     # Audio-specific libraries - mixed approach based on stability
-    "alias-free-torch==0.0.6",  # Pre-1.0, keep pinned
-    "auraloss==0.4.0",  # Pre-1.0, keep pinned
-    "descript-audio-codec>=1.0.0",  # Stable at 1.0, can unpin
-    "encodec==0.1.1",  # Pre-1.0, keep pinned
-    "k-diffusion==0.1.1",  # Pre-1.0, keep pinned
-    "laion-clap>=1.1.4",  # Above 1.0, stable releases, can unpin
-    "local-attention>=1.8.6",  # Lucidrains lib, very stable, can unpin
-    "v-diffusion-pytorch==0.0.2",  # Pre-1.0, keep pinned
-    "vector-quantize-pytorch>=1.14.41",  # Lucidrains lib, very mature, can unpin
-    "webdataset==0.2.100",  # Pre-1.0, keep pinned
-    
+    "alias-free-torch==0.0.6", # Pre-1.0, keep pinned
+    "auraloss==0.4.0", # Pre-1.0, keep pinned
+    "descript-audio-codec>=1.0.0", # Stable at 1.0, can unpin
+    "encodec==0.1.1", # Pre-1.0, keep pinned
+    "k-diffusion==0.1.1", # Pre-1.0, keep pinned
+    "laion-clap>=1.1.4", # Above 1.0, stable releases, can unpin
+    "local-attention>=1.8.6", # Lucidrains lib, very stable, can unpin
+    "v-diffusion-pytorch==0.0.2", # Pre-1.0, keep pinned
+    "vector-quantize-pytorch>=1.14.41", # Lucidrains lib, very mature, can unpin
+    "webdataset==0.2.100", # Pre-1.0, keep pinned
     # Small version libraries - keep pinned (likely breaking changes)
-    "ema-pytorch==0.2.3", 
+    "ema-pytorch==0.2.3",
     "prefigure==0.0.9",
-    
     # Tokenization - keep pinned (compatibility specific)
     "sentencepiece==0.1.99",
-    
     # Compatibility libraries - can be unpinned (excellent semver compliance)
-    "importlib-resources>=5.12.0",  # Excellent backward compatibility
+    "importlib-resources>=5.12.0", # Excellent backward compatibility
+    "x-transformers>=2.4.14",
 ]
 
 [project.urls]

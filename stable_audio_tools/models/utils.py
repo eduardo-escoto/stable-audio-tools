@@ -1,7 +1,9 @@
+from typing import Any
+
 import torch
+from torch.nn.utils import remove_weight_norm
 from safetensors.torch import load_file
 
-from torch.nn.utils import remove_weight_norm
 
 def copy_state_dict(model, state_dict):
     """Load state_dict to model, but only for keys that match exactly.
@@ -20,7 +22,7 @@ def copy_state_dict(model, state_dict):
 
     model.load_state_dict(model_state_dict, strict=False)
 
-def load_ckpt_state_dict(ckpt_path):
+def load_ckpt_state_dict(ckpt_path: str) -> dict[str, Any]:
     if ckpt_path.endswith(".safetensors"):
         state_dict = load_file(ckpt_path)
     else:
@@ -45,6 +47,7 @@ except Exception as e:
 # Get torch.compile flag from environment variable ENABLE_TORCH_COMPILE
 
 import os
+
 enable_torch_compile = os.environ.get("ENABLE_TORCH_COMPILE", "0") == "1"
 
 def compile(function, *args, **kwargs):
