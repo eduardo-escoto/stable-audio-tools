@@ -274,6 +274,16 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
 
         self.diffusion_objective = model.diffusion_objective
 
+        # Inpainting
+        self.inpainting_config = inpainting_config
+        
+        if self.inpainting_config is not None:
+            self.inpaint_mask_kwargs = self.inpainting_config.get("mask_kwargs", {})
+
+        # Determine mask_key based on both mask_padding and inpainting_config
+        use_mask = self.mask_padding or (self.inpainting_config is not None)
+        mask_key = "padding_mask" if use_mask else None
+
         if self.ambient:
             self.loss_modules = [
                 AmbientDiffusionLoss(
@@ -283,7 +293,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
                     sigma_t_key="sigmas",
                     min_noise_levels_key="min_noise_levels",
                     weight=1.0,
-                    mask_key="padding_mask" if self.mask_padding else None,
+                    mask_key=mask_key,
                     name="ambient_diffusion_loss"
                 )
             ]
@@ -292,7 +302,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
                 MSELoss("output",
                        "targets",
                        weight=1.0,
-                       mask_key="padding_mask" if self.mask_padding else None,
+                       mask_key=mask_key,
                        name="mse_loss"
                 )
             ]
@@ -322,11 +332,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
 
         self.pre_encoded = pre_encoded
 
-        # Inpainting
-        self.inpainting_config = inpainting_config
-        
-        if self.inpainting_config is not None:
-            self.inpaint_mask_kwargs = self.inpainting_config.get("mask_kwargs", {})
+
 
         # Validation
         self.validation_timesteps = validation_timesteps
@@ -482,14 +488,14 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
 
             conditioning['inpaint_mask'] = [inpaint_mask]
             conditioning['inpaint_masked_input'] = [inpaint_masked_input]
-
         output = self.diffusion(noised_inputs, t, cond=conditioning, cfg_dropout_prob = self.cfg_dropout_prob, **extra_args)
         p.tick("diffusion")
 
         loss_info.update({
             "output": output,
             "targets": targets,
-            "padding_mask": padding_masks if use_padding_mask else None,
+            # "padding_mask": padding_masks if use_padding_mask else None
+            "padding_mask": (1 - inpaint_mask).bool() if self.inpainting_config is not None else (padding_masks if use_padding_mask else None)
         })
         
         # Add ambient loss specific keys if using ambient diffusion
@@ -712,6 +718,16 @@ class DiffusionCondDemoCallback(pl.Callback):
             with torch.cuda.amp.autocast():
                 conditioning = module.diffusion.conditioner(demo_cond, module.device)
 
+            if module.inpainting_config is not None:
+
+                padding_masks = torch.stack([md["padding_mask"][0] for md in demo_cond], dim=0).to(module.device) # Shape (batch_size, sequence_length)
+
+                # Create a mask of random length for a random slice of the input
+                inpaint_masked_input, inpaint_mask = random_inpaint_mask(batch[0][:self.num_demos], padding_masks=padding_masks, **module.inpaint_mask_kwargs)
+
+                conditioning['inpaint_mask'] = [inpaint_mask]
+                conditioning['inpaint_masked_input'] = [inpaint_masked_input]
+
             cond_inputs = module.diffusion.get_conditioning_inputs(conditioning)
 
             if self.display_audio_cond:
@@ -757,7 +773,7 @@ class DiffusionCondDemoCallback(pl.Callback):
                     model = module.diffusion_ema.ema_model if module.diffusion_ema is not None else module.diffusion.model
 
                     if module.diffusion_objective == "v":
-                        fakes = sample(model, noise, self.demo_steps, 0, **cond_inputs, cfg_scale=cfg_scale, dist_shift=module.diffusion.dist_shift, batch_cfg=True)
+                        fakes = sample(model, noise, self.demo_steps, 0, **cond_inputs, cfg_scale=cfg_scale, dist_shift=module.diffusion.dist_shift, batch_cfg=True, inpaint_masked_input=inpaint_masked_input if module.inpainting_config is not None else None, inpaint_mask=inpaint_mask if module.inpainting_config is not None else None)
                     elif module.diffusion_objective == "rectified_flow":
                         fakes = sample_discrete_euler(model, noise, self.demo_steps, **cond_inputs, cfg_scale=cfg_scale, dist_shift=module.diffusion.dist_shift, batch_cfg=True)
                     elif module.diffusion_objective == "rf_denoiser":
@@ -777,10 +793,12 @@ class DiffusionCondDemoCallback(pl.Callback):
                 fakes = rearrange(fakes, 'b d n -> d (b n)')
 
                 filename = f'demo_cfg_{cfg_scale}_{trainer.global_step:08}.wav'
-                fakes_out = fakes.to(torch.float32).div(torch.max(torch.abs(fakes))).mul(32767).to(torch.int16).cpu()
+                fakes_out = fakes.to(torch.float32)
+                # normalize
+                fakes_out = fakes_out.div(torch.max(torch.abs(fakes_out))).cpu()
                 torchaudio.save(filename, fakes_out, self.sample_rate)
                 log_audio(trainer.logger, f'demo_cfg_{cfg_scale}', filename, self.sample_rate)                
-                log_image(trainer.logger, f'demo_melspec_left_cfg_{cfg_scale}', audio_spectrogram_image(fakes_out))
+                log_image(trainer.logger, f'demo_melspec_left_cfg_{cfg_scale}', audio_spectrogram_image(fakes_out.div(torch.max(torch.abs(fakes_out))).mul(32767).to(torch.int16)))
             
                 # Mid-generation conditioning display
                 if self.cond_display_configs is not None:

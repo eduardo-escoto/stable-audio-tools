@@ -19,6 +19,7 @@ class DiffusionTransformer(nn.Module):
         global_cond_dim=0,
         project_global_cond=True,
         input_concat_dim=0,
+        input_add_dims=[],
         prepend_cond_dim=0,
         depth=12,
         num_heads=8,
@@ -83,6 +84,18 @@ class DiffusionTransformer(nn.Module):
                 nn.Linear(embed_dim, embed_dim, bias=False)
             )
 
+        if len(input_add_dims) > 0:
+            # Input add conditioning, module dict
+            # self.to_input_add_embed = nn.ModuleDict()
+            # for id, dim in input_add_dims.items():
+            #     self.to_input_add_embed[id] = nn.Linear(dim, embed_dim, bias=False)
+            # self.input_add_cond_cache = None
+            # convert to just a single concatenated linear layer
+            # input_add_dims is now an ordered list of tuples (id, dim)
+            self.input_add_dims = input_add_dims
+            total_input_add_dim = sum([dim for id, dim in input_add_dims])
+            self.to_input_add_embed = nn.Linear(total_input_add_dim, embed_dim, bias=False)
+
         self.input_concat_dim = input_concat_dim
 
         dim_in = io_channels + self.input_concat_dim
@@ -130,6 +143,7 @@ class DiffusionTransformer(nn.Module):
         cross_attn_cond=None,
         cross_attn_cond_mask=None,
         input_concat_cond=None,
+        input_add_cond=None,
         global_embed=None,
         prepend_cond=None,
         prepend_cond_mask=None,
@@ -157,6 +171,7 @@ class DiffusionTransformer(nn.Module):
 
             prepend_length = prepend_cond.shape[1]
 
+        add_emb = self.to_input_add_embed(input_add_cond.transpose(1, 2)) if input_add_cond is not None else None
         if input_concat_cond is not None:
             # Interpolate input_concat_cond to the same length as x
             if input_concat_cond.shape[2] != x.shape[2]:
@@ -204,7 +219,7 @@ class DiffusionTransformer(nn.Module):
 
         if self.transformer_type == "continuous_transformer":
             # Masks not currently implemented for continuous transformer
-            output = self.transformer(x, prepend_embeds=prepend_inputs, context=cross_attn_cond, return_info=return_info, exit_layer_ix=exit_layer_ix, **extra_args, **kwargs)
+            output = self.transformer(x, prepend_embeds=prepend_inputs, context=cross_attn_cond, return_info=return_info, exit_layer_ix=exit_layer_ix, input_add_emb=add_emb, **extra_args, **kwargs)
 
             if return_info:
                 output, info = output
@@ -228,6 +243,14 @@ class DiffusionTransformer(nn.Module):
 
         return output
 
+    def apg_project(self, v0, v1):
+        dtype = v0.dtype
+        v0, v1 = v0.double(), v1.double()
+        v1 = torch.nn.functional.normalize(v1, dim=[-1, -2])
+        v0_parallel = (v0 * v1).sum(dim=[-1, -2], keepdim=True) * v1
+        v0_orthogonal = v0 - v0_parallel
+        return v0_parallel.to(dtype), v0_orthogonal.to(dtype)
+
     def forward(
         self, 
         x, 
@@ -237,21 +260,21 @@ class DiffusionTransformer(nn.Module):
         negative_cross_attn_cond=None,
         negative_cross_attn_mask=None,
         input_concat_cond=None,
+        input_add_cond=None,
         global_embed=None,
         negative_global_embed=None,
         prepend_cond=None,
         prepend_cond_mask=None,
         cfg_scale=1.0,
         cfg_dropout_prob=0.0,
+        cfg_norm_threshold=0.0,
         cfg_interval = (0, 1),
-        causal=False,
         scale_phi=0.0,
         mask=None,
         return_info=False,
         exit_layer_ix=None,
         **kwargs):
 
-        assert causal == False, "Causal mode is not supported for DiffusionTransformer"
 
         model_dtype = next(self.parameters()).dtype
         
@@ -285,6 +308,10 @@ class DiffusionTransformer(nn.Module):
         if prepend_cond_mask is not None:
             prepend_cond_mask = prepend_cond_mask.bool()
 
+        if input_add_cond is not None:
+            # Convert input_add_cond to the model dtype
+            input_add_cond = input_add_cond.to(model_dtype)
+
         # Early exit bypasses CFG processing
         if exit_layer_ix is not None:
             assert self.transformer_type == "continuous_transformer", "exit_layer_ix is only supported for continuous_transformer"
@@ -294,6 +321,7 @@ class DiffusionTransformer(nn.Module):
                 cross_attn_cond=cross_attn_cond, 
                 cross_attn_cond_mask=cross_attn_cond_mask, 
                 input_concat_cond=input_concat_cond, 
+                input_add_cond=input_add_cond,
                 global_embed=global_embed, 
                 prepend_cond=prepend_cond, 
                 prepend_cond_mask=prepend_cond_mask,
@@ -305,6 +333,7 @@ class DiffusionTransformer(nn.Module):
 
         # CFG dropout
         if cfg_dropout_prob > 0.0 and cfg_scale == 1.0:
+
             if cross_attn_cond is not None:
                 null_embed = torch.zeros_like(cross_attn_cond, device=cross_attn_cond.device)
                 dropout_mask = torch.bernoulli(torch.full((cross_attn_cond.shape[0], 1, 1), cfg_dropout_prob, device=cross_attn_cond.device)).to(torch.bool)
@@ -314,6 +343,21 @@ class DiffusionTransformer(nn.Module):
                 null_embed = torch.zeros_like(prepend_cond, device=prepend_cond.device)
                 dropout_mask = torch.bernoulli(torch.full((prepend_cond.shape[0], 1, 1), cfg_dropout_prob, device=prepend_cond.device)).to(torch.bool)
                 prepend_cond = torch.where(dropout_mask, null_embed, prepend_cond)
+
+
+            if input_add_cond is not None:
+                # get dims, apply dropout to each individual conditioning
+                # input_add_cond is a concat of multiple conditionings into 1 tensor along channel dim
+                # self.input_add_dims is ordered list of tuples (id, dim)
+                total_dim = input_add_cond.shape[1]
+                start_idx = 0
+                for id, dim in self.input_add_dims:
+                    end_idx = start_idx + dim
+                    null_embed = torch.zeros_like(input_add_cond[:, start_idx:end_idx, :], device=input_add_cond.device)
+                    dropout_mask = torch.bernoulli(torch.full((input_add_cond.shape[0], 1, 1), cfg_dropout_prob, device=input_add_cond.device)).to(torch.bool)
+                    input_add_cond[:, start_idx:end_idx, :] = torch.where(dropout_mask, null_embed, input_add_cond[:, start_idx:end_idx, :])
+                    start_idx = end_idx
+
 
         if self.diffusion_objective == "v":
             sigma = torch.sin(t * math.pi / 2)
@@ -337,6 +381,11 @@ class DiffusionTransformer(nn.Module):
                 batch_input_concat_cond = torch.cat([input_concat_cond, input_concat_cond], dim=0)
             else:
                 batch_input_concat_cond = None
+
+            if input_add_cond is not None:
+                batch_input_add_cond = torch.cat([input_add_cond, input_add_cond], dim=0)
+            else:
+                batch_input_add_cond = None
 
             batch_cond = None
             batch_cond_masks = None
@@ -388,6 +437,7 @@ class DiffusionTransformer(nn.Module):
                 cross_attn_cond_mask=batch_cond_masks, 
                 mask = batch_masks, 
                 input_concat_cond=batch_input_concat_cond, 
+                input_add_cond=batch_input_add_cond,
                 global_embed = batch_global_cond,
                 prepend_cond = batch_prepend_cond,
                 prepend_cond_mask = batch_prepend_cond_mask,
@@ -400,7 +450,7 @@ class DiffusionTransformer(nn.Module):
             cond_output, uncond_output = torch.chunk(batch_output, 2, dim=0)
 
             cfg_output = uncond_output + (cond_output - uncond_output) * cfg_scale
-
+                
             # CFG Rescale
             if scale_phi != 0.0:
                 cond_out_std = cond_output.std(dim=1, keepdim=True)
@@ -408,6 +458,7 @@ class DiffusionTransformer(nn.Module):
                 output = scale_phi * (cfg_output * (cond_out_std/out_cfg_std)) + (1-scale_phi) * cfg_output
             else:
                 output = cfg_output
+                
            
             if return_info:
                 info["uncond_output"] = uncond_output
@@ -422,6 +473,7 @@ class DiffusionTransformer(nn.Module):
                 cross_attn_cond=cross_attn_cond, 
                 cross_attn_cond_mask=cross_attn_cond_mask, 
                 input_concat_cond=input_concat_cond, 
+                input_add_cond=input_add_cond,
                 global_embed=global_embed, 
                 prepend_cond=prepend_cond, 
                 prepend_cond_mask=prepend_cond_mask,
