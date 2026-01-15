@@ -91,6 +91,7 @@
     "training": {
         "use_ema": true,
         "log_loss_info": false,
+        "ambient": false,
         "optimizer_configs": {
             "diffusion": {
                 "optimizer": {

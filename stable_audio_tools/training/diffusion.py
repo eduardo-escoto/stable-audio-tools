@@ -4,6 +4,7 @@ import random
 import torch
 import torchaudio
 import typing as tp
+import warnings
 
 import auraloss
 from ema_pytorch import EMA
@@ -19,10 +20,13 @@ from ..models.diffusion import DiffusionModelWrapper, ConditionedDiffusionModelW
 from ..models.autoencoders import DiffusionAutoencoder
 from ..models.inpainting import random_inpaint_mask
 from .autoencoders import create_loss_modules_from_bottleneck
-from .losses import AuralossLoss, MSELoss, MultiLoss
+from .losses import AuralossLoss, MSELoss, MultiLoss, AmbientDiffusionLoss
 from .utils import create_optimizer_from_config, create_scheduler_from_config, log_audio, log_image, log_metric, log_point_cloud
 
 from time import time
+
+# Default minimum noise level for ambient diffusion when not provided in metadata
+DEFAULT_MIN_NOISE_LEVEL = 0.0
 
 class Profiler:
 
@@ -230,7 +234,8 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             timestep_sampler_options: tp.Optional[tp.Dict[str, tp.Any]] = None,
             validation_timesteps = [0.1, 0.3, 0.5, 0.7, 0.9],
             p_one_shot: float = 0.0,
-            inpainting_config: dict = None
+            inpainting_config: dict = None,
+            ambient: bool = False
     ):
         super().__init__()
 
@@ -265,16 +270,32 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
 
         self.p_one_shot = p_one_shot
 
+        self.ambient = ambient
+
         self.diffusion_objective = model.diffusion_objective
 
-        self.loss_modules = [
-            MSELoss("output",
-                   "targets",
-                   weight=1.0,
-                   mask_key="padding_mask" if self.mask_padding else None,
-                   name="mse_loss"
-            )
-        ]
+        if self.ambient:
+            self.loss_modules = [
+                AmbientDiffusionLoss(
+                    output_key="output",
+                    x_key="diffusion_input",
+                    noise_key="noise",
+                    sigma_t_key="sigmas",
+                    min_noise_levels_key="min_noise_levels",
+                    weight=1.0,
+                    mask_key="padding_mask" if self.mask_padding else None,
+                    name="ambient_diffusion_loss"
+                )
+            ]
+        else:
+            self.loss_modules = [
+                MSELoss("output",
+                       "targets",
+                       weight=1.0,
+                       mask_key="padding_mask" if self.mask_padding else None,
+                       name="mse_loss"
+                )
+            ]
 
         self.losses = MultiLoss(self.loss_modules)
 
@@ -402,6 +423,31 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             # Set t to 1 with probability p_one_shot
             t = torch.where(torch.rand_like(t) < self.p_one_shot, torch.ones_like(t), t)
 
+        # Handle ambient diffusion: clamp timesteps to minimum noise level per sample
+        if self.ambient:
+            # Extract min_noise_level from metadata, using default if not provided
+            min_noise_levels = []
+            for i, md in enumerate(metadata):
+                if "min_noise_level" in md.keys():
+                    min_noise_level = md.get("min_noise_level")
+                else:
+                    warnings.warn(
+                        f"Sample {i} in batch is missing 'min_noise_level' in metadata. "
+                        f"Using default value {DEFAULT_MIN_NOISE_LEVEL}.",
+                        UserWarning
+                    )
+                    min_noise_level = DEFAULT_MIN_NOISE_LEVEL
+                min_noise_levels.append(min_noise_level)
+            
+            # Convert to tensor and move to device
+            min_noise_levels = torch.tensor(min_noise_levels, dtype=t.dtype, device=self.device)
+            
+            # Clamp timesteps to be at least min_noise_level (only clamp minimum, not maximum)
+            t = torch.clamp(t, min=min_noise_levels)
+            
+            # Store min_noise_levels in loss_info for potential use by ambient loss
+            loss_info["min_noise_levels"] = min_noise_levels
+
         # Calculate the noise schedule parameters for those timesteps
         if self.diffusion_objective in ["v"]:
             alphas, sigmas = get_alphas_sigmas(t)
@@ -445,6 +491,15 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             "targets": targets,
             "padding_mask": padding_masks if use_padding_mask else None,
         })
+        
+        # Add ambient loss specific keys if using ambient diffusion
+        if self.ambient:
+            loss_info.update({
+                "diffusion_input": diffusion_input,
+                "noise": noise,
+                "sigmas": sigmas.squeeze(),  # Remove spatial dimensions, keep (batch_size,)
+                "noised_inputs": noised_inputs,  # x_t for ambient_utils conversion
+            })
 
         loss, losses = self.losses(loss_info)
 
