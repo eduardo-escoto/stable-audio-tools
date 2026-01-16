@@ -281,8 +281,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             self.inpaint_mask_kwargs = self.inpainting_config.get("mask_kwargs", {})
 
         # Determine mask_key based on both mask_padding and inpainting_config
-        use_mask = self.mask_padding or (self.inpainting_config is not None)
-        mask_key = "padding_mask" if use_mask else None
+        mask_key = "padding_mask" if self.inpainting_config is not None else None
 
         if self.ambient:
             self.loss_modules = [
