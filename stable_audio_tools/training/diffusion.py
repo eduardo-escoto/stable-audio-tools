@@ -293,7 +293,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             )
         ]
 
-        self.losses = self.get_ambient_loss if self.ambient else MultiLoss(self.loss_modules)
+        self.losses = self.compute_ambient_o_loss if self.ambient else MultiLoss(self.loss_modules)
 
         self.log_loss_info = log_loss_info
 
@@ -636,7 +636,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
 
     
     # Compute ambient loss
-    def get_ambient_loss(self, loss_info: dict) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def compute_ambient_o_loss(self, loss_info: dict) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
         Compute ambient loss.
         
