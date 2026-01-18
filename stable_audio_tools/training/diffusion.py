@@ -669,18 +669,10 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         alpha_t_min = alpha_t_min[:, None, None] # Expand dimensions to match x_0
         sigma_t_min = sigma_t_min[:, None, None] # Expand dimensions to match x_0
 
-        # Compute weighting coefficients
-        if self.diffusion_objective == "v":
-            coef_model = (sigma_t**2 - sigma_t_min**2) / (sigma_t**2 * alpha_t_min + 1e-8) # Coefficient for model output h_θ
-            coef_x_t = (sigma_t_min**2 / (sigma_t**2 + 1e-8)) * (alpha_t / alpha_t_min) # Coefficient for current state x_t
-        elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
-            coef_model = (sigma_t**2 - sigma_t_min**2) / (sigma_t**2 * torch.sqrt(1 - sigma_t_min**2) + 1e-8) # Coefficient for model output h_θ
-            coef_x_t = (sigma_t_min**2 / (sigma_t**2 + 1e-8)) * torch.sqrt((1 - sigma_t**2) / (1 - sigma_t_min**2)) # Coefficient for current state x_t
-        else:
-            raise ValueError(f"Unknown objective: {self.diffusion_objective}")
-        
-        # Interpolate model output with current state
-        prediction = coef_model * output + coef_x_t * x_t
+        # Compute weighting coefficients, and interpolate model output with current state
+        coef_model = (sigma_t**2 - sigma_t_min**2) / (sigma_t**2 * alpha_t_min + 1e-8)
+        coef_x_t = (sigma_t_min**2 / (sigma_t**2 + 1e-8)) * (alpha_t / (alpha_t_min + 1e-8))
+        prediction = (coef_model * output) + (coef_x_t * torch.sqrt(x_t))
 
         # Create observed data at observation noise level
         epsilon_obs = torch.randn_like(x_0) # Sample observation noise
