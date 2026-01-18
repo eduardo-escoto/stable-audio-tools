@@ -28,6 +28,7 @@ from time import time
 
 # Default minimum noise level for ambient diffusion when not provided in metadata
 DEFAULT_MIN_NOISE_LEVEL = 0.0
+MIN_NOISE_LEVEL, MAX_NOISE_LEVEL = 0.0, 1.0 # minimum and maximum possible noise levels
 
 class Profiler:
 
@@ -419,18 +420,17 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         if self.ambient:
             min_noise_levels = []
             for i, md in enumerate(metadata):
-                if "min_noise_level" in md.keys():
-                    min_noise_level = md.get("min_noise_level")
-                else:
+                min_noise_level = md.get("min_noise_level", DEFAULT_MIN_NOISE_LEVEL)
+                if "min_noise_level" not in md.keys():
                     warnings.warn(
                         f"Sample {i} in batch is missing 'min_noise_level' in metadata. "
                         f"Using default value {DEFAULT_MIN_NOISE_LEVEL}.",
                         UserWarning
                     )
-                    min_noise_level = DEFAULT_MIN_NOISE_LEVEL
                 min_noise_levels.append(min_noise_level)
             min_noise_levels = torch.tensor(min_noise_levels, dtype=t.dtype, device=self.device) # Convert to tensor and move to device
-            t = torch.clamp(t, min=min_noise_levels) # Clamp timesteps to minimum noise level per sample, so we don't train on timesteps below the minimum noise level
+            min_noise_levels = torch.clamp(min_noise_levels, min=MIN_NOISE_LEVEL, max=MAX_NOISE_LEVEL) # Ensure min_noise_levels is between 0 and 1
+            t = min_noise_levels + t * (MAX_NOISE_LEVEL - min_noise_levels) # Rescale timesteps to be between min_noise_levels and 1
             loss_info["min_noise_levels"] = min_noise_levels # Store min_noise_levels in loss_info for potential use by ambient loss
 
         # Calculate the noise schedule parameters for those timesteps
@@ -478,6 +478,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         })
         if self.ambient:
             loss_info.update({
+                "alphas": alphas,
                 "sigmas": sigmas,
                 "noised_inputs": noised_inputs,
             })
@@ -651,29 +652,39 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         x_0 = loss_info["audio_reals"]
         x_t = loss_info["noised_inputs"]
         output = loss_info["output"]
-        min_noise_levels = loss_info["min_noise_levels"]
-        sigma_t = loss_info["sigmas"]
         assert x_0.shape == x_t.shape == output.shape, "x_0, x_t, and output must have the same shape"
-        assert sigma_t.shape == min_noise_levels.shape, "Number of sigmas must match number of min noise levels, shape: (batch_size, 1, 1)"
+        min_noise_levels = loss_info["min_noise_levels"]
+        alpha_t = loss_info["alphas"]
+        sigma_t = loss_info["sigmas"]
+        assert alpha_t.shape == sigma_t.shape == min_noise_levels.shape, "Number of alphas, sigmas, and min noise levels must match, shape: (batch_size, 1, 1)"
         
-        # Create observed data at noise level t_min
+        # Get alpha and sigma at observation noise level
         if self.diffusion_objective == "v":
             alpha_t_min, sigma_t_min = get_alphas_sigmas(min_noise_levels)
         elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
-            alpha_t_min, sigma_t_min = 1 - min_noise_levels, min_noise_levels
+            alpha_t_min = 1 - min_noise_levels
+            sigma_t_min = min_noise_levels
         else:
             raise ValueError(f"Unknown objective: {self.diffusion_objective}")
-        alpha_t_min, sigma_t_min = alpha_t_min[:, None, None], sigma_t_min[:, None, None] # expand dimensions to match x_0
-        epsilon_obs = torch.randn_like(x_0) # Sample observation noise
-        x_t_min = alpha_t_min * x_0 + sigma_t_min * epsilon_obs # Apply forward process at t_min
-        assert sigma_t_min.shape == sigma_t.shape, "sigma_t_min and sigma_t must have the same shape"
-        del epsilon_obs, alpha_t_min
+        alpha_t_min = alpha_t_min[:, None, None] # Expand dimensions to match x_0
+        sigma_t_min = sigma_t_min[:, None, None] # Expand dimensions to match x_0
 
-        # Compute weighting coefficient
-        alpha = (sigma_t**2 - sigma_t_min**2) / sigma_t**2
+        # Compute weighting coefficients
+        if self.diffusion_objective == "v":
+            coef_model = (sigma_t**2 - sigma_t_min**2) / (sigma_t**2 * alpha_t_min + 1e-8) # Coefficient for model output h_θ
+            coef_x_t = (sigma_t_min**2 / (sigma_t**2 + 1e-8)) * (alpha_t / alpha_t_min) # Coefficient for current state x_t
+        elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
+            coef_model = (sigma_t**2 - sigma_t_min**2) / (sigma_t**2 * torch.sqrt(1 - sigma_t_min**2) + 1e-8) # Coefficient for model output h_θ
+            coef_x_t = (sigma_t_min**2 / (sigma_t**2 + 1e-8)) * torch.sqrt((1 - sigma_t**2) / (1 - sigma_t_min**2)) # Coefficient for current state x_t
+        else:
+            raise ValueError(f"Unknown objective: {self.diffusion_objective}")
         
         # Interpolate model output with current state
-        prediction = alpha * output + (1 - alpha) * x_t
+        prediction = coef_model * output + coef_x_t * x_t
+
+        # Create observed data at observation noise level
+        epsilon_obs = torch.randn_like(x_0) # Sample observation noise
+        x_t_min = alpha_t_min * x_0 + sigma_t_min * epsilon_obs # Apply forward process at t_min
         
         # Compare to observation at noise level t_min
         loss = F.mse_loss(prediction, x_t_min)
