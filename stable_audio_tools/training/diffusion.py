@@ -670,9 +670,10 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         sigma_t_min = sigma_t_min[:, None, None] # Expand dimensions to match x_0
 
         # Compute weighting coefficients, and interpolate model output with current state
-        coef_model = (sigma_t**2 - sigma_t_min**2) / (sigma_t**2 * alpha_t_min + 1e-8)
-        coef_x_t = (sigma_t_min**2 / (sigma_t**2 + 1e-8)) * (alpha_t / (alpha_t_min + 1e-8))
-        prediction = (coef_model * output) + (coef_x_t * torch.sqrt(x_t))
+        divide_by_zero_epsilon = 1e-8
+        coef_model = ((alpha_t_min**2 * sigma_t**2) - (alpha_t**2 * sigma_t_min**2)) / (sigma_t**2 * alpha_t_min + divide_by_zero_epsilon)
+        coef_x_t = (alpha_t * sigma_t_min**2) / (alpha_t_min * sigma_t**2 + divide_by_zero_epsilon)
+        prediction = (coef_model * output) + (coef_x_t * x_t)
 
         # Create observed data at observation noise level
         epsilon_obs = torch.randn_like(x_0) # Sample observation noise
