@@ -91,6 +91,7 @@
     },
     "training": {
         "learning_rate": 4e-5,
+        "ambient": false,
         "demo": {
             "demo_every": 2000,
             "demo_steps": 250,
