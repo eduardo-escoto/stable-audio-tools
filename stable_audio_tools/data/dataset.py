@@ -94,7 +94,7 @@ def keyword_scandir(
 def get_audio_filenames(
     paths: list,  # directories in which to search
     keywords=None,
-    exts=['.wav', '.mp3', '.flac', '.ogg', '.aif', '.opus']
+    exts=['.wav', '.mp3', '.flac', '.ogg', '.aif', '.opus', '.safetensors']
 ):
     "recursively get a list of audio filenames"
     filenames = []
@@ -139,12 +139,14 @@ class LocalDatasetConfig:
         custom_metadata_fn: Optional[Callable[[str], str]] = None,
         latent_extension: str = "npy",
         whitelist_pth: Optional[str] = None,
+        blacklist_pth: Optional[str] = None
     ):
         self.id = id
         self.path = path
         self.custom_metadata_fn = custom_metadata_fn
         self.latent_extension = latent_extension
         self.whitelist_pth = whitelist_pth
+        self.blacklist_pth = blacklist_pth
 
 class SampleDataset(torch.utils.data.Dataset):
     def __init__(
@@ -186,10 +188,27 @@ class SampleDataset(torch.utils.data.Dataset):
 
         print(f'Found {len(self.filenames)} files')
 
+    def load_stems(self, path: str) -> dict:
+        from safetensors.torch import load_file as sf_load_file
+        loaded_tensors = sf_load_file(path, device="cpu")
+        tensors = {}
+        mix = torch.zeros(loaded_tensors['0'].shape, dtype = loaded_tensors['0'].dtype)
+        for key, stem in loaded_tensors.items():
+            tensors[int(key)] = stem
+            mix += stem
+        mix = mix / max(abs(mix.max()), abs(mix.min()))
+        tensors['mix'] = mix
+        return tensors
+
     def load_file(self, filename):
         ext = filename.split(".")[-1]
 
-        audio, in_sr = torchaudio.load(filename, format=ext)
+        if ext == 'safetensors':
+            audio_dict = self.load_stems(filename)
+            in_sr = 44100
+            audio = audio_dict['mix']
+        else:
+            audio, in_sr = torchaudio.load(filename, format=ext)
 
         if in_sr != self.sr:
             resample_tf = T.Resample(in_sr, self.sr)
@@ -288,15 +307,27 @@ class PreEncodedDataset(torch.utils.data.Dataset):
             # self.filenames.extend(get_latent_filenames(config.path, [config.latent_extension]))
             if config.custom_metadata_fn is not None:
                 self.custom_metadata_fns[config.path] = config.custom_metadata_fn
+            print(config.blacklist_pth)
             whitelist_pth = config.whitelist_pth
+            blacklist_pth = config.blacklist_pth
             if whitelist_pth is not None:
+                print(f"There are originally {len(cur_files)}") 
                 with open(whitelist_pth, "r") as f:
                     whitelist = f.read().splitlines()
                 whitelist = set([x.split(".")[0] for x in whitelist])
                 cur_files = [fn for fn in cur_files if os.path.splitext(os.path.basename(fn))[0] in whitelist]
                 print(f"After applying whitelist of {len(whitelist)} items, {len(cur_files)} files remain.")
+            elif blacklist_pth is not None:
+                from pathlib import Path
+                print(f"There are originally {len(cur_files)}") 
+                with open(blacklist_pth, "r") as f:
+                    blacklist = f.read().splitlines()
+                blacklist = set([str(Path(x).stem) for x in blacklist])
+                cur_files = [fn for fn in cur_files if str(Path(fn).stem) not in blacklist]
+                print(f"After applying blacklist of {len(blacklist)} items, {len(cur_files)} files remain.")
             else:
                 print(f"found {len(cur_files)} files in dataset {config.id} at {config.path}")
+
             self.filenames += cur_files
 
 
@@ -912,7 +943,8 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
                     path=pre_encoded_dir_path,
                     custom_metadata_fn=custom_metadata_fn,
                     latent_extension=pre_encoded_dir_config.get("latent_extension", 'npy'),
-                    whitelist_pth=pre_encoded_dir_config.get("whitelist_pth", None)
+                    whitelist_pth=pre_encoded_dir_config.get("whitelist_pth", None),
+                    blacklist_pth=pre_encoded_dir_config.get("blacklist_pth", None),
                 )
             )
 
