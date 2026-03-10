@@ -354,7 +354,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         loss_info = {}
 
         diffusion_input = reals
-
+        
         if not self.pre_encoded:
             loss_info["audio_reals"] = diffusion_input
 
