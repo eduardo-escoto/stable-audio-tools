@@ -1,0 +1,11 @@
+{
+    "dataset_type": "audio_dir",
+    "datasets": [
+        {
+            "id": "sPDMX",
+            "path": "/home/share/datasets/sPDMX/data",
+            "custom_metadata_module": "./metadata_modules/sPDMX_metadata.py"
+        }
+    ],
+    "random_crop": false
+}
