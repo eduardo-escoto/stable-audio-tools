@@ -357,6 +357,8 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         
         if not self.pre_encoded:
             loss_info["audio_reals"] = diffusion_input
+        else:
+            loss_info["audio_reals"] = diffusion_input # while the key name 'audio_reals' is misleading, audio_reals is just the input x0 to ambient diffusion, and it doesn't matter if it is raw audio or pre-encoded latents
 
         p.tick("setup")
 
@@ -431,6 +433,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             min_noise_levels = torch.tensor(min_noise_levels, dtype=t.dtype, device=self.device) # Convert to tensor and move to device
             min_noise_levels = torch.clamp(min_noise_levels, min=MIN_NOISE_LEVEL, max=MAX_NOISE_LEVEL) # Ensure min_noise_levels is between 0 and 1
             t = min_noise_levels + t * (MAX_NOISE_LEVEL - min_noise_levels) # Rescale timesteps to be between min_noise_levels and 1
+            min_noise_levels = min_noise_levels[:, None, None] # Expand dimensions to match x_0 with shape (batch_size, 1, 1)
             loss_info["min_noise_levels"] = min_noise_levels # Store min_noise_levels in loss_info for potential use by ambient loss
 
         # Calculate the noise schedule parameters for those timesteps
@@ -652,11 +655,11 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         x_0 = loss_info["audio_reals"]
         x_t = loss_info["noised_inputs"]
         output = loss_info["output"]
-        assert x_0.shape == x_t.shape == output.shape, "x_0, x_t, and output must have the same shape"
+        assert x_0.shape == x_t.shape == output.shape, f"x_0, x_t, and output must have the same shape, but got: x_0.shape: {x_0.shape}, x_t.shape: {x_t.shape}, output.shape: {output.shape}"
         min_noise_levels = loss_info["min_noise_levels"]
         alpha_t = loss_info["alphas"]
         sigma_t = loss_info["sigmas"]
-        assert alpha_t.shape == sigma_t.shape == min_noise_levels.shape, "Number of alphas, sigmas, and min noise levels must match, shape: (batch_size, 1, 1)"
+        assert alpha_t.shape == sigma_t.shape == min_noise_levels.shape, f"Number of alphas, sigmas, and min noise levels must match, shape: (batch_size, 1, 1), but got: alpha_t.shape: {alpha_t.shape}, sigma_t.shape: {sigma_t.shape}, min_noise_levels.shape: {min_noise_levels.shape}"
         
         # Get alpha and sigma at observation noise level
         if self.diffusion_objective == "v":

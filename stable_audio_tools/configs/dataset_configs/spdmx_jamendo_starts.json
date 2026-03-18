@@ -4,16 +4,16 @@
         {
             "id": "sPDMX_stems_extracted_good",
             "path": "/deepfreeze/share/sPDMX_stems_extracted",
-            "custom_metadata_module": "./metadata_modules/sPDMX_extracted_metadata.py",
+            "custom_metadata_module": "stable_audio_tools/configs/dataset_configs/custom_metadata/sPDMX_extracted_metadata.py",
             "latent_extension": "npy",
-            "blacklist_pth": "./configs/datasets/err_npy_files.txt"
+            "blacklist_pth": "stable_audio_tools/configs/dataset_configs/err_npy_files.txt"
         },
         {
             "id": "jamendo",
             "path": "/home/share/datasets/jamendo_extract/",
-            "custom_metadata_module": "/home/eduardo/projects/synth_audio/stable-audio-tools/stable_audio_tools/configs/dataset_configs/custom_metadata/custom_md_jamendo.py",
+            "custom_metadata_module": "stable_audio_tools/configs/dataset_configs/custom_metadata/custom_md_jamendo.py",
             "latent_extension": "npy",
-            "whitelist_pth": "/home/eduardo/projects/synth_audio/configs/datasets/jamendo_starts.txt"
+            "whitelist_pth": "stable_audio_tools/configs/dataset_configs/jamendo_starts.txt"
         }
     ],
     "random_crop": false,

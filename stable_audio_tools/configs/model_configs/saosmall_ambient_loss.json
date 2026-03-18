@@ -117,13 +117,7 @@
             "demo_every": 2000,
             "demo_steps": 50,
             "num_demos": 4,
-            "demo_cond_from_batch": false,
-            "demo_cond": [
-                {"prompt": "The chill track's mood is set by the gentle strumming of a clean sounding electric guitar, which has a slight delay effect added to it.", "seconds_total": 12, "seconds_start": 0},
-                {"prompt": "The music piece is an instrumental with a prominent guitar sound, belonging to the genres blues and classicrock, and has a mood that is cool. It follows a 4/4 time signature and features a tempo of 120.0 bpm.", "seconds_total": 12, "seconds_start": 0},
-                {"prompt": "This music is upbeat chiptune electronic music, perfect for a platformer video game level. It has a fast tempo and energetic rhythm, with catchy melodies and a fun, playful mood.", "seconds_total": 12, "seconds_start": 0},
-                {"prompt": "This sounds like a classical orchestral music piece, featuring a grand and majestic arrangement with a full orchestra. The mood is uplifting and inspiring, with a sense of adventure and heroism.", "seconds_total": 12, "seconds_start": 0}
-            ],
+            "demo_cond_from_batch": true,
             "demo_cfg_scales": [1, 4, 7]
         }
     }
