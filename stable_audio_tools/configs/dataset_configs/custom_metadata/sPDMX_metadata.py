@@ -42,4 +42,4 @@ def get_custom_metadata(info, audio):
 
     track_caption = ", ".join(track_md_vals)
     # print(track_caption)
-    return {"prompt": track_caption}
+    return {"prompt": track_caption, "min_noise_level": 0.25}

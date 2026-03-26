@@ -114,7 +114,7 @@
             }
         },
         "demo": {
-            "demo_every": 2000,
+            "demo_every": 10000,
             "demo_steps": 50,
             "num_demos": 4,
             "demo_cond_from_batch": true,
