@@ -484,6 +484,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
                 "alphas": alphas,
                 "sigmas": sigmas,
                 "noised_inputs": noised_inputs,
+                "noise": noise,
             })
 
         # loss logic
@@ -651,7 +652,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             Tuple containing the ambient loss and a dictionary of losses.
         """
 
-        # get variables
+        # Get variables
         x_0 = loss_info["audio_reals"]
         x_t = loss_info["noised_inputs"]
         output = loss_info["output"]
@@ -660,6 +661,8 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         alpha_t = loss_info["alphas"]
         sigma_t = loss_info["sigmas"]
         assert alpha_t.shape == sigma_t.shape == min_noise_levels.shape, f"Number of alphas, sigmas, and min noise levels must match, shape: (batch_size, 1, 1), but got: alpha_t.shape: {alpha_t.shape}, sigma_t.shape: {sigma_t.shape}, min_noise_levels.shape: {min_noise_levels.shape}"
+        epsilon_obs = loss_info["noise"] # Sample observation noise
+        assert epsilon_obs.shape == x_0.shape, f"Noise must have the same shape as x_0, but got: epsilon_obs.shape: {epsilon_obs.shape}, x_0.shape: {x_0.shape}"
         
         # Get alpha and sigma at observation noise level
         if self.diffusion_objective == "v":
@@ -672,15 +675,26 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         alpha_t_min = alpha_t_min[:, None, None] # Expand dimensions to match x_0
         sigma_t_min = sigma_t_min[:, None, None] # Expand dimensions to match x_0
 
+        # Convert model output to x0 prediction
+        if self.diffusion_objective == "v":
+            x0_pred = alpha_t * x_t - sigma_t * output
+        elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
+            x0_pred = x_t - sigma_t * output
+        else:
+            raise ValueError(f"Unknown objective: {self.diffusion_objective}")
+
+        # # Compute prediction of x_t_min using posterior form
+        # divide_by_zero_epsilon = 1e-8
+        # prediction = (alpha_t_min * x0_pred) + ((sigma_t_min / (sigma_t + divide_by_zero_epsilon)) * (x_t - alpha_t * x0_pred))
+        
         # Compute weighting coefficients, and interpolate model output with current state
         divide_by_zero_epsilon = 1e-8
         coef_model = ((alpha_t_min**2 * sigma_t**2) - (alpha_t**2 * sigma_t_min**2)) / (sigma_t**2 * alpha_t_min + divide_by_zero_epsilon)
         coef_x_t = (alpha_t * sigma_t_min**2) / (alpha_t_min * sigma_t**2 + divide_by_zero_epsilon)
-        prediction = (coef_model * output) + (coef_x_t * x_t)
+        prediction = (coef_model * x0_pred) + (coef_x_t * x_t)
 
         # Create observed data at observation noise level
-        epsilon_obs = torch.randn_like(x_0) # Sample observation noise
-        x_t_min = alpha_t_min * x_0 + sigma_t_min * epsilon_obs # Apply forward process at t_min
+        x_t_min = (alpha_t_min * x_0) + (sigma_t_min * epsilon_obs) # Apply forward process at t_min
         
         # Compare to observation at noise level t_min
         loss = F.mse_loss(prediction, x_t_min)
