@@ -10,7 +10,7 @@
         },
         {
             "id": "jamendo",
-            "path": "/home/share/datasets/jamendo_extract/",
+            "path": "/deepfreeze/share/jamendo_extract",
             "custom_metadata_module": "stable_audio_tools/configs/dataset_configs/custom_metadata/custom_md_jamendo.py",
             "latent_extension": "npy",
             "whitelist_pth": "stable_audio_tools/configs/dataset_configs/jamendo_starts.txt"
