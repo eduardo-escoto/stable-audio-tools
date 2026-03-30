@@ -1,5 +1,14 @@
-import pandas as pd
 import random
+import sys
+from pathlib import Path
+
+_cm_dir = str(Path(__file__).resolve().parent)
+if _cm_dir not in sys.path:
+    sys.path.insert(0, _cm_dir)
+
+from custom_metadata_constants import CLIP_SECONDS_TOTAL, MIN_NOISE_LEVEL
+
+
 def get_custom_metadata(info, audio):
     
     prompt = info['prompt']
@@ -9,4 +18,8 @@ def get_custom_metadata(info, audio):
     sentences = [s for s in sentences if random.random() > 0.1]
     caption = '. '.join(sentences)
 
-    return {"prompt": caption, "min_noise_level": 0.25}
+    return {
+        "prompt": caption,
+        "min_noise_level": MIN_NOISE_LEVEL,
+        "seconds_total": CLIP_SECONDS_TOTAL,
+    }

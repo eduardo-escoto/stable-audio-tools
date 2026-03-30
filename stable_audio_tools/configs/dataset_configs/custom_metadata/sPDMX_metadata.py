@@ -1,6 +1,14 @@
-from random import shuffle
+import sys
 from pathlib import Path
+from random import shuffle
+
 from pandas import read_csv, isna
+
+_cm_dir = str(Path(__file__).resolve().parent)
+if _cm_dir not in sys.path:
+    sys.path.insert(0, _cm_dir)
+
+from custom_metadata_constants import MIN_NOISE_LEVEL, CLIP_SECONDS_TOTAL
 
 sPDMX_md = None
 
@@ -42,4 +50,8 @@ def get_custom_metadata(info, audio):
 
     track_caption = ", ".join(track_md_vals)
     # print(track_caption)
-    return {"prompt": track_caption, "min_noise_level": 0.25}
+    return {
+        "prompt": track_caption, 
+        "min_noise_level": MIN_NOISE_LEVEL, 
+        "seconds_total": CLIP_SECONDS_TOTAL,
+    }
