@@ -6,6 +6,7 @@ import torchaudio
 import typing as tp
 import warnings
 from typing import Tuple, Dict
+import math
 
 import auraloss
 from ema_pytorch import EMA
@@ -21,7 +22,7 @@ from ..models.diffusion import DiffusionModelWrapper, ConditionedDiffusionModelW
 from ..models.autoencoders import DiffusionAutoencoder
 from ..models.inpainting import random_inpaint_mask
 from .autoencoders import create_loss_modules_from_bottleneck
-from .losses import AuralossLoss, MSELoss, MultiLoss
+from .losses import AmbientOLoss, AuralossLoss, MSELoss, MultiLoss
 from .utils import create_optimizer_from_config, create_scheduler_from_config, log_audio, log_image, log_metric, log_point_cloud
 
 from time import time
@@ -285,16 +286,27 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         # Determine mask_key based on both mask_padding and inpainting_config
         mask_key = "padding_mask" if self.inpainting_config is not None else None
 
-        self.loss_modules = [
-            MSELoss("output",
-                    "targets",
+        if self.ambient:
+            self.loss_modules = [
+                AmbientOLoss(self.diffusion_objective, 
+                    name='ambient_loss', 
                     weight=1.0,
-                    mask_key=mask_key,
-                    name="mse_loss"
-            )
-        ]
-
-        self.losses = self.compute_ambient_o_loss if self.ambient else MultiLoss(self.loss_modules)
+                    use_ambient_weight=False, # make True to enable ambient weight
+                    buffer_threshold=2.0 / math.sqrt(3), # buffer threshold for ambient weight
+                    clip_max_weight=None # clip max weight for ambient weight, disabled because we have a buffer threshold
+                )
+            ]
+        else:
+            self.loss_modules = [
+                MSELoss("output",
+                        "targets",
+                        weight=1.0,
+                        mask_key=mask_key,
+                        name="mse_loss"
+                )
+            ]
+        
+        self.losses = MultiLoss(self.loss_modules)
 
         self.log_loss_info = log_loss_info
 
@@ -639,7 +651,6 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         else:
             torch.save({"state_dict": self.diffusion.state_dict()}, path)
 
-    
     # Compute ambient loss
     def compute_ambient_o_loss(self, loss_info: dict) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
@@ -683,10 +694,6 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         else:
             raise ValueError(f"Unknown objective: {self.diffusion_objective}")
 
-        # # Compute prediction of x_t_min using posterior form
-        # divide_by_zero_epsilon = 1e-8
-        # prediction = (alpha_t_min * x0_pred) + ((sigma_t_min / (sigma_t + divide_by_zero_epsilon)) * (x_t - alpha_t * x0_pred))
-        
         # Compute weighting coefficients, and interpolate model output with current state
         divide_by_zero_epsilon = 1e-8
         coef_model = ((alpha_t_min**2 * sigma_t**2) - (alpha_t**2 * sigma_t_min**2)) / (sigma_t**2 * alpha_t_min + divide_by_zero_epsilon)
