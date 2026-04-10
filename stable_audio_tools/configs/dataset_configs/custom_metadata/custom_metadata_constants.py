@@ -4,7 +4,7 @@ These files are often loaded via importlib (see stable_audio_tools.data.dataset)
 import them using the path bootstrap pattern in each consumer module.
 """
 
-MIN_NOISE_LEVEL = 0.25
+MIN_NOISE_LEVEL = 0.7
 
 # Wall-clock seconds for the `seconds_total` number conditioner (see PreEncodedDataset
 # and model configs). Not latent frames: NumberConditioner normalizes this value using

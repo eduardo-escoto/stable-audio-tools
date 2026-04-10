@@ -144,27 +144,15 @@ class AmbientOLoss(LossModule):
     def forward(self, info):
 
         # Get variables
-        x_0 = info["audio_reals"]
         x_t = info["noised_inputs"]
+        x_t_min = info["targets"]
         output = info["output"]
-        assert x_0.shape == x_t.shape == output.shape, f"x_0, x_t, and output must have the same shape, but got: x_0.shape: {x_0.shape}, x_t.shape: {x_t.shape}, output.shape: {output.shape}"
-        min_noise_levels = info["min_noise_levels"]
+        assert x_t.shape == x_t_min.shape == output.shape, f"x_0, x_t, x_t_min, and output must have the same shape, but got: x_t.shape: {x_t.shape}, x_t_min.shape: {x_t_min.shape}, output.shape: {output.shape}"
         alpha_t = info["alphas"]
         sigma_t = info["sigmas"]
-        assert alpha_t.shape == sigma_t.shape == min_noise_levels.shape, f"Number of alphas, sigmas, and min noise levels must match, shape: (batch_size, 1, 1), but got: alpha_t.shape: {alpha_t.shape}, sigma_t.shape: {sigma_t.shape}, min_noise_levels.shape: {min_noise_levels.shape}"
-        epsilon_obs = info["noise"] # Sample observation noise
-        assert epsilon_obs.shape == x_0.shape, f"Noise must have the same shape as x_0, but got: epsilon_obs.shape: {epsilon_obs.shape}, x_0.shape: {x_0.shape}"
-
-        # Get alpha and sigma at observation noise level
-        if self.diffusion_objective == "v":
-            alpha_t_min, sigma_t_min = get_alphas_sigmas(min_noise_levels)
-        elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
-            alpha_t_min = 1 - min_noise_levels
-            sigma_t_min = min_noise_levels
-        else:
-            raise ValueError(f"Unknown objective: {self.diffusion_objective}")
-        alpha_t_min = alpha_t_min[:, None, None] # Expand dimensions to match x_0
-        sigma_t_min = sigma_t_min[:, None, None] # Expand dimensions to match x_0
+        alpha_t_min = info["alpha_t_min"]
+        sigma_t_min = info["sigma_t_min"]
+        assert alpha_t.shape == sigma_t.shape == alpha_t_min.shape == sigma_t_min.shape, f"Number of alphas, sigmas, and min noise levels must match, shape: (batch_size, 1, 1), but got: alpha_t.shape: {alpha_t.shape}, sigma_t.shape: {sigma_t.shape}, alpha_t_min.shape: {alpha_t_min.shape}, sigma_t_min.shape: {sigma_t_min.shape}"
 
         # Convert model output to x0 prediction
         if self.diffusion_objective == "v":
@@ -180,9 +168,6 @@ class AmbientOLoss(LossModule):
         coef_x_t = (alpha_t * sigma_t_min**2) / (alpha_t_min * sigma_t**2 + divide_by_zero_epsilon)
         prediction = (coef_model * x0_pred) + (coef_x_t * x_t)
 
-        # Create observed data at observation noise level
-        x_t_min = (alpha_t_min * x_0) + (sigma_t_min * epsilon_obs) # Apply forward process at t_min
-
         # Compare to observation at noise level t_min
         loss_per_sample = F.mse_loss(prediction, x_t_min, reduction='none')
 
@@ -195,6 +180,11 @@ class AmbientOLoss(LossModule):
             loss = weighted_loss.sum() / (buffer_mask.float().sum() + 1e-8) # Reduce: mean over all dimensions, buffered samples contribute 0, so effectively averaged over valid samples
         else:
             loss = loss_per_sample.mean() # standard just mean over all dimensions, reduces to standard MSE loss
+
+        # # -- TEMPORARY DEBUGGING --
+        # debug_x0_loss = F.mse_loss(x0_pred, x_t_min)
+        # info["debug_x0_loss"] = debug_x0_loss
+        # # -- END TEMPORARY DEBUGGING --
 
         # Decay weight and return loss
         self.decay_weight()
