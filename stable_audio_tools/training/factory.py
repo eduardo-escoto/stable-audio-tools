@@ -147,6 +147,35 @@ def create_training_wrapper_from_config(model_config, model):
             lr=training_config["learning_rate"],
             use_reconstruction_loss=training_config.get("use_reconstruction_loss", False)
         )
+    elif model_type == 'dit_classifier':
+        from .classifiers import DiTClassifierTrainingWrapper
+        from ..models.factory import create_pretransform_from_config
+
+        model_cfg = model_config["model"]
+        training_cfg = training_config
+
+        pretransform = None
+        if "pretransform" in model_cfg:
+            sample_rate = model_config.get("sample_rate", 44100)
+            pretransform = create_pretransform_from_config(model_cfg["pretransform"], sample_rate)
+
+        diffusion_objective = (
+            model_cfg.get("diffusion", {}).get("diffusion_objective", "rectified_flow")
+        )
+
+        return DiTClassifierTrainingWrapper(
+            model,
+            diffusion_objective=diffusion_objective,
+            pretransform=pretransform,
+            pre_encoded=training_cfg.get("pre_encoded", True),
+            optimizer_configs=training_cfg.get("optimizer_configs", None),
+            lr=training_cfg.get("learning_rate", None),
+            label_key=training_cfg.get("label_key", "label"),
+            use_ema=training_cfg.get("use_ema", True),
+            timestep_sampler=training_cfg.get("timestep_sampler", "uniform"),
+            timestep_sampler_options=training_cfg.get("timestep_sampler_options", {}),
+            validation_timesteps=training_cfg.get("validation_timesteps", [0.1, 0.3, 0.5, 0.7, 0.9]),
+        )
     elif model_type == 'lm':
         from .lm import AudioLanguageModelTrainingWrapper
 
@@ -234,13 +263,23 @@ def create_demo_callback_from_config(model_config, **kwargs):
         from .lm import AudioLanguageModelDemoCallback
 
         return AudioLanguageModelDemoCallback(
-            demo_every=demo_config.get("demo_every", 2000), 
+            demo_every=demo_config.get("demo_every", 2000),
             sample_size=model_config["sample_size"],
             sample_rate=model_config["sample_rate"],
             demo_cfg_scales=demo_config.get("demo_cfg_scales", [1]),
             demo_conditioning=demo_config.get("demo_cond", None),
             num_demos=demo_config.get("num_demos", 8),
             **kwargs
+        )
+    elif model_type == "dit_classifier":
+        from .classifiers import DiTClassifierDemoCallback
+
+        return DiTClassifierDemoCallback(
+            demo_every=demo_config.get("demo_every", 2000),
+            num_demos=demo_config.get("num_demos", 8),
+            t_steps=demo_config.get("t_steps", 50),
+            label_key=training_config.get("label_key", "label"),
+            class_names=demo_config.get("class_names", None),
         )
     else:
         raise NotImplementedError(f'Unknown model type: {model_type}')

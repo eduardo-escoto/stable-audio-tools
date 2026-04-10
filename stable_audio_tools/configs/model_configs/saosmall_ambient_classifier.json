@@ -1,0 +1,101 @@
+{
+    "model_type": "dit_classifier",
+    "sample_size": 524288,
+    "sample_rate": 44100,
+    "audio_channels": 2,
+    "model": {
+        "pretransform": {
+            "type": "autoencoder",
+            "iterate_batch": false,
+            "model_half": true,
+            "config": {
+                "encoder": {
+                    "type": "oobleck",
+                    "requires_grad": false,
+                    "config": {
+                        "in_channels": 2,
+                        "channels": 128,
+                        "c_mults": [1, 2, 4, 8, 16],
+                        "strides": [2, 4, 4, 8, 8],
+                        "latent_dim": 128,
+                        "use_snake": true
+                    }
+                },
+                "decoder": {
+                    "type": "oobleck",
+                    "config": {
+                        "out_channels": 2,
+                        "channels": 128,
+                        "c_mults": [1, 2, 4, 8, 16],
+                        "strides": [2, 4, 4, 8, 8],
+                        "latent_dim": 64,
+                        "use_snake": true,
+                        "final_tanh": false
+                    }
+                },
+                "bottleneck": {
+                    "type": "vae"
+                },
+                "latent_dim": 64,
+                "downsampling_ratio": 2048,
+                "io_channels": 2
+            }
+        },
+        "diffusion": {
+            "type": "dit",
+            "diffusion_objective": "rectified_flow",
+            "config": {
+                "io_channels": 64,
+                "embed_dim": 1024,
+                "depth": 16,
+                "num_heads": 8,
+                "cond_token_dim": 0,
+                "global_cond_dim": 0,
+                "transformer_type": "continuous_transformer",
+                "attn_kwargs": {
+                    "qk_norm": "ln"
+                }
+            }
+        },
+        "classifier": {
+            "depth_fraction": 0.5,
+            "checkpoint_path": "/path/to/sao_small.ckpt"
+        }
+    },
+    "training": {
+        "pre_encoded": true,
+        "label_key": "label",
+        "demo": {
+            "demo_every": 2000,
+            "num_demos": 8,
+            "t_steps": 50,
+            "class_names": ["Low quality (sPDMX)", "High quality (Jamendo)"]
+        },
+        "timestep_sampler": "log_snr",
+        "timestep_sampler_options": {
+            "mean_logsnr": -1.2,
+            "std_logsnr": 2.0
+        },
+        "optimizer_configs": {
+            "classifier": {
+                "optimizer": {
+                    "type": "AdamW",
+                    "config": {
+                        "lr": 1e-4,
+                        "betas": [0.9, 0.95],
+                        "eps": 1e-8,
+                        "weight_decay": 0.01
+                    }
+                },
+                "scheduler": {
+                    "type": "InverseLR",
+                    "config": {
+                        "inv_gamma": 1000000,
+                        "power": 0.5,
+                        "warmup": 0.99
+                    }
+                }
+            }
+        }
+    }
+}

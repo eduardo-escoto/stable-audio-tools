@@ -1,0 +1,21 @@
+{
+    "dataset_type": "pre_encoded",
+    "datasets": [
+        {
+            "id": "sPDMX_stems_extracted",
+            "path": "/deepfreeze/share/sPDMX_stems_extracted",
+            "custom_metadata_module": "./stable_audio_tools/configs/dataset_configs/custom_metadata/label_neg.py",
+            "latent_extension": "npy",
+            "blacklist_pth": "./stable_audio_tools/configs/dataset_configs/err_npy_files.txt"
+        },
+        {
+            "id": "jamendo",
+            "path": "/home/share/datasets/jamendo_extract/",
+            "custom_metadata_module": "./stable_audio_tools/configs/dataset_configs/custom_metadata/label_pos.py",
+            "latent_extension": "npy",
+            "whitelist_pth": "/home/eduardo/projects/synth_audio/stable-audio-tools/stable_audio_tools/configs/dataset_configs/jamendo_starts.txt"
+        }
+    ],
+    "random_crop": false,
+    "latent_crop_length": 256
+}
