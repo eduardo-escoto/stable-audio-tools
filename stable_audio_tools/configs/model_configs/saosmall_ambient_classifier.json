@@ -58,8 +58,6 @@
             }
         },
         "classifier": {
-            "num_classes": 2,
-            "pool": "mean",
             "depth_fraction": 0.5,
             "checkpoint_path": "/path/to/sao_small.ckpt"
         }
@@ -67,6 +65,17 @@
     "training": {
         "pre_encoded": true,
         "label_key": "label",
+        "demo": {
+            "demo_every": 2000,
+            "num_demos": 8,
+            "t_steps": 50,
+            "class_names": ["Low quality (sPDMX)", "High quality (Jamendo)"]
+        },
+        "timestep_sampler": "log_snr",
+        "timestep_sampler_options": {
+            "mean_logsnr": -1.2,
+            "std_logsnr": 2.0
+        },
         "optimizer_configs": {
             "classifier": {
                 "optimizer": {
