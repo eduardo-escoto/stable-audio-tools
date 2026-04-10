@@ -1,12 +1,7 @@
-import sys
 from pathlib import Path
 from random import shuffle
 
 from pandas import read_csv, isna
-
-_cm_dir = str(Path(__file__).resolve().parent)
-if _cm_dir not in sys.path:
-    sys.path.insert(0, _cm_dir)
 
 sPDMX_md = None
 

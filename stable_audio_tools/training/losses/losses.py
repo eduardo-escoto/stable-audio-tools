@@ -181,11 +181,6 @@ class AmbientOLoss(LossModule):
         else:
             loss = loss_per_sample.mean() # standard just mean over all dimensions, reduces to standard MSE loss
 
-        # # -- TEMPORARY DEBUGGING --
-        # debug_x0_loss = F.mse_loss(x0_pred, x_t_min)
-        # info["debug_x0_loss"] = debug_x0_loss
-        # # -- END TEMPORARY DEBUGGING --
-
         # Decay weight and return loss
         self.decay_weight()
         return self.weight * loss

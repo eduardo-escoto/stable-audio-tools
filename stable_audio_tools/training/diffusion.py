@@ -551,29 +551,11 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
 
             self.log_dict(debug_log_dict)
 
-        # # -- TEMPORARY DEBUGGING --
-        # # Calculate x0 and flow losses for logging
-        # if self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
-        #     x0_pred_log = noised_inputs - sigmas * output
-        #     x0_loss_log = F.mse_loss(x0_pred_log, diffusion_input)
-        #     flow_loss_log = F.mse_loss(output, targets)
-        # elif self.diffusion_objective == "v":
-        #     x0_pred_log = alphas * noised_inputs - sigmas * output
-        #     x0_loss_log = F.mse_loss(x0_pred_log, diffusion_input)
-        #     flow_loss_log = F.mse_loss(output, targets)
-        # # -- END TEMPORARY DEBUGGING --
-
         log_dict = {
             'train/loss': loss.detach(),
             'train/std_data': diffusion_input.std(),
             'train/lr': self.trainer.optimizers[0].param_groups[0]['lr']
         }
-
-        # # -- TEMPORARY DEBUGGING --
-        # log_dict['train/x0_loss'] = x0_loss_log.detach()
-        # log_dict['train/flow_loss'] = flow_loss_log.detach()
-        # log_dict['train/ambient_debug_x0_loss'] = loss_info.get("debug_x0_loss", torch.tensor(0.0)).detach()
-        # # -- END TEMPORARY DEBUGGING --
 
         for loss_name, loss_value in losses.items():
             log_dict[f"train/{loss_name}"] = loss_value.detach()
