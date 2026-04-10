@@ -434,13 +434,14 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         if self.ambient:
             min_noise_levels = []
             for i, md in enumerate(metadata):
-                min_noise_level = md.get("min_noise_level", DEFAULT_MIN_NOISE_LEVEL)
-                if "min_noise_level" not in md.keys():
+                min_noise_level = md.get("min_noise_level")
+                if min_noise_level is None:
                     warnings.warn(
                         f"Sample {i} in batch is missing 'min_noise_level' in metadata. "
                         f"Using default value {DEFAULT_MIN_NOISE_LEVEL}.",
                         UserWarning
                     )
+                    min_noise_level = DEFAULT_MIN_NOISE_LEVEL
                 min_noise_levels.append(min_noise_level)
             min_noise_levels = torch.tensor(min_noise_levels, dtype=t.dtype, device=self.device) # Convert to tensor and move to device
             min_noise_levels = torch.clamp(min_noise_levels, min=MIN_NOISE_LEVEL, max=MAX_NOISE_LEVEL) # Ensure min_noise_levels is between 0 and 1
