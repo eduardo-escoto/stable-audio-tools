@@ -119,10 +119,22 @@
             "num_demos": 4,
             "demo_cond_from_batch": false,
             "demo_cond": [
-                {"prompt": "Solo grand piano in a dry room, soft arpeggios and gentle chord voicings, intimate and reflective mood.", "seconds_total": 12},
-                {"prompt": "Warm tenor saxophone lead with walking upright bass and brushed drums, smoky late-night jazz club.", "seconds_total": 12},
-                {"prompt": "Driving analog synthesizer bass and punchy electronic drums, neon retro synthwave with arpeggiated leads.", "seconds_total": 12},
-                {"prompt": "Acoustic fingerpicked steel-string guitar with light room reverb, folk ballad feel, clear picking patterns.", "seconds_total": 12}
+                {
+                    "prompt": "Solo grand piano in a dry room, soft arpeggios and gentle chord voicings, intimate and reflective mood.",
+                    "seconds_total": 12
+                },
+                {
+                    "prompt": "Warm tenor saxophone lead with walking upright bass and brushed drums, smoky late-night jazz club.",
+                    "seconds_total": 12
+                },
+                {
+                    "prompt": "Driving analog synthesizer bass and punchy electronic drums, neon retro synthwave with arpeggiated leads.",
+                    "seconds_total": 12
+                },
+                {
+                    "prompt": "Acoustic fingerpicked steel-string guitar with light room reverb, folk ballad feel, clear picking patterns.",
+                    "seconds_total": 12
+                }
             ],
             "demo_cfg_scales": [1, 4, 7]
         }

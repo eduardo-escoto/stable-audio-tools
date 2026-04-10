@@ -1,5 +1,6 @@
 {
     "dataset_type": "pre_encoded",
+    "min_noise_level": 0.7,
     "datasets": [
         {
             "id": "sPDMX_stems_extracted_good",

@@ -6,8 +6,6 @@ _cm_dir = str(Path(__file__).resolve().parent)
 if _cm_dir not in sys.path:
     sys.path.insert(0, _cm_dir)
 
-from custom_metadata_constants import CLIP_SECONDS_TOTAL, MIN_NOISE_LEVEL
-
 
 def get_custom_metadata(info, audio):
     
@@ -20,6 +18,4 @@ def get_custom_metadata(info, audio):
 
     return {
         "prompt": caption,
-        "min_noise_level": MIN_NOISE_LEVEL,
-        "seconds_total": CLIP_SECONDS_TOTAL,
     }
