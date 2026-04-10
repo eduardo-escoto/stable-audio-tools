@@ -4,9 +4,9 @@
         {
             "id": "sPDMX_stems_extracted_good",
             "path": "/deepfreeze/share/sPDMX_stems_extracted",
-            "custom_metadata_module": "./metadata_modules/sPDMX_extracted_metadata.py",
+            "custom_metadata_module": "stable_audio_tools/configs/dataset_configs/custom_metadata/sPDMX_extracted_metadata.py",
             "latent_extension": "npy",
-            "blacklist_pth": "./configs/datasets/err_npy_files.txt"
+            "blacklist_pth": "stable_audio_tools/configs/dataset_configs/err_npy_files.txt"
         }
     ],
     "random_crop": false,

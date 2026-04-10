@@ -1,4 +1,5 @@
 import typing as tp
+from typing import Optional
 import torch
 import math
 
@@ -7,6 +8,8 @@ from torch import nn
 from .utils import mmd
 
 import ambient_utils
+
+from ...inference.sampling import get_alphas_sigmas
 
 class LossModule(nn.Module):
     def __init__(self, name: str, weight: float = 1.0, decay = 1.0):
@@ -92,6 +95,95 @@ class MSELoss(LossModule):
         mse_loss = mse_loss.mean()
         self.decay_weight()
         return self.weight * mse_loss
+
+
+class AmbientOLoss(LossModule):
+    def __init__(
+        self,
+        diffusion_objective: str,
+        name: str = 'ambient_loss',
+        weight: float = 1.0,
+        decay = 1.0,
+        use_ambient_weight: bool = False,
+        buffer_threshold: float = 2.0 / math.sqrt(3),
+        clip_max_weight: Optional[float] = None,
+    ):
+        super().__init__(name=name, weight=weight, decay=decay)
+
+        self.diffusion_objective = diffusion_objective
+        self.use_ambient_weight = use_ambient_weight
+        self.buffer_threshold = buffer_threshold
+        self.clip_max_weight = clip_max_weight
+
+    def compute_ambient_weight(self, sigma_t, sigma_t_min):
+        # Implements λ_amb(σ, σ_min) = σ^4 / (σ^2 - σ^2_min)^2
+        numerator = sigma_t**4
+        denominator = (sigma_t**2 - sigma_t_min**2) ** 2
+
+        # Add epsilon to avoid division by zero
+        weight = numerator / (denominator + 1e-10)
+
+        # Optional: clip to maximum value
+        if self.clip_max_weight is not None:
+            weight = torch.clamp(weight, max=self.clip_max_weight)
+
+        return weight
+
+    def apply_buffer(self, sigma_t, sigma_t_min):
+        # Buffer condition: σ_t > threshold * σ_{t_min}
+        # For threshold = 2/√3 ≈ 1.15, this means σ_t must be at least 15% larger
+        buffer_mask = sigma_t > (self.buffer_threshold * sigma_t_min)
+
+        # Safety: ensure at least some samples pass the buffer
+        # (in case all samples are in buffer zone due to bad sampling)
+        if buffer_mask.sum() == 0: # if no samples pass buffer, allow all samples
+            buffer_mask = torch.ones_like(buffer_mask, dtype=torch.bool)
+
+        return buffer_mask
+
+    def forward(self, info):
+
+        # Get variables
+        x_t = info["noised_inputs"]
+        x_t_min = info["targets"]
+        output = info["output"]
+        assert x_t.shape == x_t_min.shape == output.shape, f"x_0, x_t, x_t_min, and output must have the same shape, but got: x_t.shape: {x_t.shape}, x_t_min.shape: {x_t_min.shape}, output.shape: {output.shape}"
+        alpha_t = info["alphas"]
+        sigma_t = info["sigmas"]
+        alpha_t_min = info["alpha_t_min"]
+        sigma_t_min = info["sigma_t_min"]
+        assert alpha_t.shape == sigma_t.shape == alpha_t_min.shape == sigma_t_min.shape, f"Number of alphas, sigmas, and min noise levels must match, shape: (batch_size, 1, 1), but got: alpha_t.shape: {alpha_t.shape}, sigma_t.shape: {sigma_t.shape}, alpha_t_min.shape: {alpha_t_min.shape}, sigma_t_min.shape: {sigma_t_min.shape}"
+
+        # Convert model output to x0 prediction
+        if self.diffusion_objective == "v":
+            x0_pred = alpha_t * x_t - sigma_t * output
+        elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
+            x0_pred = x_t - sigma_t * output
+        else:
+            raise ValueError(f"Unknown objective: {self.diffusion_objective}")
+
+        # Compute weighting coefficients, and interpolate model output with current state
+        divide_by_zero_epsilon = 1e-8
+        coef_model = ((alpha_t_min**2 * sigma_t**2) - (alpha_t**2 * sigma_t_min**2)) / (sigma_t**2 * alpha_t_min + divide_by_zero_epsilon)
+        coef_x_t = (alpha_t * sigma_t_min**2) / (alpha_t_min * sigma_t**2 + divide_by_zero_epsilon)
+        prediction = (coef_model * x0_pred) + (coef_x_t * x_t)
+
+        # Compare to observation at noise level t_min
+        loss_per_sample = F.mse_loss(prediction, x_t_min, reduction='none')
+
+        # Apply ambient weight if enabled
+        if self.use_ambient_weight:
+            ambient_weight = self.compute_ambient_weight(sigma_t, sigma_t_min) # compute ambient weight
+            buffer_mask = self.apply_buffer(sigma_t, sigma_t_min) # apply buffer mask (zeros out samples too close to t_min)
+            combined_weight = ambient_weight * buffer_mask.float() # combine: weight * mask (mask zeros out buffered samples)
+            weighted_loss = loss_per_sample * combined_weight # apply weight to loss
+            loss = weighted_loss.sum() / (buffer_mask.float().sum() + 1e-8) # Reduce: mean over all dimensions, buffered samples contribute 0, so effectively averaged over valid samples
+        else:
+            loss = loss_per_sample.mean() # standard just mean over all dimensions, reduces to standard MSE loss
+
+        # Decay weight and return loss
+        self.decay_weight()
+        return self.weight * loss
 
 class LossWithTarget(LossModule):
     def __init__(self, loss_module, input_key: str, target_key: str, name: str, weight: float = 1, decay = 1.0):

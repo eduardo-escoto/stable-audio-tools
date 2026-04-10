@@ -1,4 +1,5 @@
 import random
+
 def get_custom_metadata(info, audio):
     
     prompt = info['prompt']
@@ -8,4 +9,6 @@ def get_custom_metadata(info, audio):
     sentences = [s for s in sentences if random.random() > 0.1]
     caption = '. '.join(sentences)
 
-    return {"prompt": caption}
+    return {
+        "prompt": caption,
+    }
