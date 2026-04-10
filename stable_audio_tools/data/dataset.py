@@ -139,7 +139,8 @@ class LocalDatasetConfig:
         custom_metadata_fn: Optional[Callable[[str], str]] = None,
         latent_extension: str = "npy",
         whitelist_pth: Optional[str] = None,
-        blacklist_pth: Optional[str] = None
+        blacklist_pth: Optional[str] = None,
+        min_noise_level: Optional[float] = None,
     ):
         self.id = id
         self.path = path
@@ -147,6 +148,7 @@ class LocalDatasetConfig:
         self.latent_extension = latent_extension
         self.whitelist_pth = whitelist_pth
         self.blacklist_pth = blacklist_pth
+        self.min_noise_level = min_noise_level
 
 class SampleDataset(torch.utils.data.Dataset):
     def __init__(
@@ -179,12 +181,15 @@ class SampleDataset(torch.utils.data.Dataset):
         self.sr = sample_rate
 
         self.custom_metadata_fns = {}
+        self.path_min_noise_level = {}
 
         for config in configs:
             self.root_paths.append(config.path)
             self.filenames.extend(get_audio_filenames(config.path, keywords))
             if config.custom_metadata_fn is not None:
                 self.custom_metadata_fns[config.path] = config.custom_metadata_fn
+            if config.min_noise_level is not None:
+                self.path_min_noise_level[config.path] = config.min_noise_level
 
         print(f'Found {len(self.filenames)} files')
 
@@ -280,6 +285,11 @@ class SampleDataset(torch.utils.data.Dataset):
                 
                     del info["__audio__"]
 
+            for path_prefix, mnl in self.path_min_noise_level.items():
+                if path_prefix in audio_filename:
+                    info["min_noise_level"] = mnl
+                    break
+
             return (audio, info)
         except Exception as e:
             print(f'Couldn\'t load file {audio_filename}: {e}')
@@ -299,6 +309,7 @@ class PreEncodedDataset(torch.utils.data.Dataset):
         self.filenames = []
 
         self.custom_metadata_fns = {}
+        self.path_min_noise_level = {}
 
         self.latent_extension = latent_extension
 
@@ -307,6 +318,8 @@ class PreEncodedDataset(torch.utils.data.Dataset):
             # self.filenames.extend(get_latent_filenames(config.path, [config.latent_extension]))
             if config.custom_metadata_fn is not None:
                 self.custom_metadata_fns[config.path] = config.custom_metadata_fn
+            if config.min_noise_level is not None:
+                self.path_min_noise_level[config.path] = config.min_noise_level
             print(config.blacklist_pth)
             whitelist_pth = config.whitelist_pth
             blacklist_pth = config.blacklist_pth
@@ -406,6 +419,11 @@ class PreEncodedDataset(torch.utils.data.Dataset):
                 if "__replace__" in info and info["__replace__"] is not None:
                     # Replace the latents with the new latents if the custom metadata function returns a new set of latents
                     latents = info["__replace__"]
+
+            for path_prefix, mnl in self.path_min_noise_level.items():
+                if path_prefix in latent_filename:
+                    info["min_noise_level"] = mnl
+                    break
 
             info["audio"] = latents
 
@@ -875,6 +893,7 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
         assert audio_dir_configs is not None, "Directory configuration must be specified in datasets[\"dataset\"]"
 
         configs = []
+        top_min_noise_level = dataset_config.get("min_noise_level", None)
 
         for audio_dir_config in audio_dir_configs:
             audio_dir_path = audio_dir_config.get("path", None)
@@ -890,11 +909,14 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
 
                 custom_metadata_fn = metadata_module.get_custom_metadata
 
+            min_noise_level = audio_dir_config.get("min_noise_level", top_min_noise_level)
+
             configs.append(
                 LocalDatasetConfig(
                     id=audio_dir_config["id"],
                     path=audio_dir_path,
-                    custom_metadata_fn=custom_metadata_fn
+                    custom_metadata_fn=custom_metadata_fn,
+                    min_noise_level=min_noise_level,
                 )
             )
 
@@ -919,6 +941,7 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
         min_length_sec = dataset_config.get("min_length_sec", None)
         max_length_sec = dataset_config.get("max_length_sec", None)
         random_crop = dataset_config.get("random_crop", False)
+        top_min_noise_level = dataset_config.get("min_noise_level", None)
 
         configs = []
 
@@ -937,6 +960,8 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
 
                 custom_metadata_fn = metadata_module.get_custom_metadata
 
+            min_noise_level = pre_encoded_dir_config.get("min_noise_level", top_min_noise_level)
+
             configs.append(
                 LocalDatasetConfig(
                     id=pre_encoded_dir_config["id"],
@@ -945,6 +970,7 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
                     latent_extension=pre_encoded_dir_config.get("latent_extension", 'npy'),
                     whitelist_pth=pre_encoded_dir_config.get("whitelist_pth", None),
                     blacklist_pth=pre_encoded_dir_config.get("blacklist_pth", None),
+                    min_noise_level=min_noise_level,
                 )
             )
 

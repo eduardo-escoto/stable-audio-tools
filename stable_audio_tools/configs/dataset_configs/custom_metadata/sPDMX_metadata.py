@@ -1,5 +1,6 @@
-from random import shuffle
 from pathlib import Path
+from random import shuffle
+
 from pandas import read_csv, isna
 
 sPDMX_md = None
@@ -42,4 +43,6 @@ def get_custom_metadata(info, audio):
 
     track_caption = ", ".join(track_md_vals)
     # print(track_caption)
-    return {"prompt": track_caption}
+    return {
+        "prompt": track_caption,
+    }

@@ -6,6 +6,7 @@ import torchaudio
 import typing as tp
 import warnings
 from typing import Tuple, Dict
+import math
 
 import auraloss
 from ema_pytorch import EMA
@@ -21,7 +22,7 @@ from ..models.diffusion import DiffusionModelWrapper, ConditionedDiffusionModelW
 from ..models.autoencoders import DiffusionAutoencoder
 from ..models.inpainting import random_inpaint_mask
 from .autoencoders import create_loss_modules_from_bottleneck
-from .losses import AuralossLoss, MSELoss, MultiLoss
+from .losses import AmbientOLoss, AuralossLoss, MSELoss, MultiLoss
 from .utils import create_optimizer_from_config, create_scheduler_from_config, log_audio, log_image, log_metric, log_point_cloud
 
 from time import time
@@ -285,16 +286,27 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         # Determine mask_key based on both mask_padding and inpainting_config
         mask_key = "padding_mask" if self.inpainting_config is not None else None
 
-        self.loss_modules = [
-            MSELoss("output",
-                    "targets",
+        if self.ambient:
+            self.loss_modules = [
+                AmbientOLoss(self.diffusion_objective, 
+                    name='ambient_loss', 
                     weight=1.0,
-                    mask_key=mask_key,
-                    name="mse_loss"
-            )
-        ]
-
-        self.losses = self.compute_ambient_o_loss if self.ambient else MultiLoss(self.loss_modules)
+                    use_ambient_weight=False, # make True to enable ambient weight
+                    buffer_threshold=2.0 / math.sqrt(3), # buffer threshold for ambient weight
+                    clip_max_weight=None # clip max weight for ambient weight, disabled because we have a buffer threshold
+                )
+            ]
+        else:
+            self.loss_modules = [
+                MSELoss("output",
+                        "targets",
+                        weight=1.0,
+                        mask_key=mask_key,
+                        name="mse_loss"
+                )
+            ]
+        
+        self.losses = MultiLoss(self.loss_modules)
 
         self.log_loss_info = log_loss_info
 
@@ -357,6 +369,8 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         
         if not self.pre_encoded:
             loss_info["audio_reals"] = diffusion_input
+        else:
+            loss_info["audio_reals"] = diffusion_input # while the key name 'audio_reals' is misleading, audio_reals is just the input x0 to ambient diffusion, and it doesn't matter if it is raw audio or pre-encoded latents
 
         p.tick("setup")
 
@@ -420,17 +434,19 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         if self.ambient:
             min_noise_levels = []
             for i, md in enumerate(metadata):
-                min_noise_level = md.get("min_noise_level", DEFAULT_MIN_NOISE_LEVEL)
-                if "min_noise_level" not in md.keys():
+                min_noise_level = md.get("min_noise_level")
+                if min_noise_level is None:
                     warnings.warn(
                         f"Sample {i} in batch is missing 'min_noise_level' in metadata. "
                         f"Using default value {DEFAULT_MIN_NOISE_LEVEL}.",
                         UserWarning
                     )
+                    min_noise_level = DEFAULT_MIN_NOISE_LEVEL
                 min_noise_levels.append(min_noise_level)
             min_noise_levels = torch.tensor(min_noise_levels, dtype=t.dtype, device=self.device) # Convert to tensor and move to device
             min_noise_levels = torch.clamp(min_noise_levels, min=MIN_NOISE_LEVEL, max=MAX_NOISE_LEVEL) # Ensure min_noise_levels is between 0 and 1
             t = min_noise_levels + t * (MAX_NOISE_LEVEL - min_noise_levels) # Rescale timesteps to be between min_noise_levels and 1
+            min_noise_levels = min_noise_levels[:, None, None] # Expand dimensions to match x_0 with shape (batch_size, 1, 1)
             loss_info["min_noise_levels"] = min_noise_levels # Store min_noise_levels in loss_info for potential use by ambient loss
 
         # Calculate the noise schedule parameters for those timesteps
@@ -438,14 +454,37 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             alphas, sigmas = get_alphas_sigmas(t)
         elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
             alphas, sigmas = 1-t, t
-
-        # Combine the ground truth data and the noise
         alphas = alphas[:, None, None]
         sigmas = sigmas[:, None, None]
-        noise = torch.randn_like(diffusion_input)
-        noised_inputs = diffusion_input * alphas + noise * sigmas
 
-        if self.diffusion_objective == "v":
+        # Compute x_t_min for ambient loss
+        if self.ambient:
+
+            # Get alpha and sigma at observation noise level
+            if self.diffusion_objective == "v":
+                alpha_t_min, sigma_t_min = get_alphas_sigmas(min_noise_levels)
+            elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
+                alpha_t_min = 1 - min_noise_levels
+                sigma_t_min = min_noise_levels
+            else:
+                raise ValueError(f"Unknown objective: {self.diffusion_objective}")
+
+            # Create observed data at observation noise level
+            noise_t_min = torch.randn_like(diffusion_input) # sample new noise for x_t_min
+            x_t_min = (alpha_t_min * diffusion_input) + (sigma_t_min * noise_t_min) # Apply forward process at t_min
+
+        # Combine the ground truth data and the noise
+        noise = torch.randn_like(diffusion_input)
+        if self.ambient:
+            alpha_t, sigma_t = alphas, sigmas # alias for readability
+            noised_inputs = (alpha_t / (alpha_t_min + 1e-8)) * x_t_min + (torch.sqrt((alpha_t_min**2 * sigma_t**2) - (alpha_t**2 * sigma_t_min**2)) / (alpha_t_min + 1e-8)) * noise
+        else:
+            noised_inputs = diffusion_input * alphas + noise * sigmas
+
+        # Get targets for loss
+        if self.ambient:
+            targets = x_t_min
+        elif self.diffusion_objective == "v":
             targets = noise * alphas - diffusion_input * sigmas
         elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
             targets = noise - diffusion_input
@@ -478,13 +517,15 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         })
         if self.ambient:
             loss_info.update({
+                "noised_inputs": noised_inputs,
                 "alphas": alphas,
                 "sigmas": sigmas,
-                "noised_inputs": noised_inputs,
+                "alpha_t_min": alpha_t_min,
+                "sigma_t_min": sigma_t_min,
             })
 
         # loss logic
-        output = targets.clone() # sanity check, should yield a loss of 0
+        # output = targets.clone() # sanity check, should yield a loss of 0
         loss, losses = self.losses(loss_info)
 
         p.tick("loss")
@@ -509,7 +550,6 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             }
 
             self.log_dict(debug_log_dict)
-
 
         log_dict = {
             'train/loss': loss.detach(),
@@ -634,56 +674,6 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             save_file(self.diffusion.state_dict(), path)
         else:
             torch.save({"state_dict": self.diffusion.state_dict()}, path)
-
-    
-    # Compute ambient loss
-    def compute_ambient_o_loss(self, loss_info: dict) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        """
-        Compute ambient loss.
-        
-        Args:
-            loss_info: Dictionary containing the necessary information for computing the ambient loss.
-        
-        Returns:
-            Tuple containing the ambient loss and a dictionary of losses.
-        """
-
-        # get variables
-        x_0 = loss_info["audio_reals"]
-        x_t = loss_info["noised_inputs"]
-        output = loss_info["output"]
-        assert x_0.shape == x_t.shape == output.shape, "x_0, x_t, and output must have the same shape"
-        min_noise_levels = loss_info["min_noise_levels"]
-        alpha_t = loss_info["alphas"]
-        sigma_t = loss_info["sigmas"]
-        assert alpha_t.shape == sigma_t.shape == min_noise_levels.shape, "Number of alphas, sigmas, and min noise levels must match, shape: (batch_size, 1, 1)"
-        
-        # Get alpha and sigma at observation noise level
-        if self.diffusion_objective == "v":
-            alpha_t_min, sigma_t_min = get_alphas_sigmas(min_noise_levels)
-        elif self.diffusion_objective in ["rectified_flow", "rf_denoiser"]:
-            alpha_t_min = 1 - min_noise_levels
-            sigma_t_min = min_noise_levels
-        else:
-            raise ValueError(f"Unknown objective: {self.diffusion_objective}")
-        alpha_t_min = alpha_t_min[:, None, None] # Expand dimensions to match x_0
-        sigma_t_min = sigma_t_min[:, None, None] # Expand dimensions to match x_0
-
-        # Compute weighting coefficients, and interpolate model output with current state
-        divide_by_zero_epsilon = 1e-8
-        coef_model = ((alpha_t_min**2 * sigma_t**2) - (alpha_t**2 * sigma_t_min**2)) / (sigma_t**2 * alpha_t_min + divide_by_zero_epsilon)
-        coef_x_t = (alpha_t * sigma_t_min**2) / (alpha_t_min * sigma_t**2 + divide_by_zero_epsilon)
-        prediction = (coef_model * output) + (coef_x_t * x_t)
-
-        # Create observed data at observation noise level
-        epsilon_obs = torch.randn_like(x_0) # Sample observation noise
-        x_t_min = alpha_t_min * x_0 + sigma_t_min * epsilon_obs # Apply forward process at t_min
-        
-        # Compare to observation at noise level t_min
-        loss = F.mse_loss(prediction, x_t_min)
-        losses = {"ambient_loss": loss}
-
-        return loss, losses
 
 class DiffusionCondDemoCallback(pl.Callback):
     def __init__(self,
