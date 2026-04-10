@@ -147,6 +147,31 @@ def create_training_wrapper_from_config(model_config, model):
             lr=training_config["learning_rate"],
             use_reconstruction_loss=training_config.get("use_reconstruction_loss", False)
         )
+    elif model_type == 'dit_classifier':
+        from .classifiers import AmbientDiTClassifierTrainingWrapper
+        from ..models.factory import create_pretransform_from_config
+
+        model_cfg = model_config["model"]
+        training_cfg = training_config
+
+        pretransform = None
+        if "pretransform" in model_cfg:
+            sample_rate = model_config.get("sample_rate", 44100)
+            pretransform = create_pretransform_from_config(model_cfg["pretransform"], sample_rate)
+
+        diffusion_objective = (
+            model_cfg.get("diffusion", {}).get("diffusion_objective", "rectified_flow")
+        )
+
+        return AmbientDiTClassifierTrainingWrapper(
+            model,
+            diffusion_objective=diffusion_objective,
+            pretransform=pretransform,
+            pre_encoded=training_cfg.get("pre_encoded", True),
+            optimizer_configs=training_cfg.get("optimizer_configs", None),
+            lr=training_cfg.get("learning_rate", None),
+            label_key=training_cfg.get("label_key", "label"),
+        )
     elif model_type == 'lm':
         from .lm import AudioLanguageModelTrainingWrapper
 
