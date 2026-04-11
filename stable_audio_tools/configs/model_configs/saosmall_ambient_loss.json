@@ -1,5 +1,7 @@
 {
     "model_type": "diffusion_cond",
+    "pretrained_ckpt_path": "/deepfreeze/pnlong/ambient/sao_small/model.safetensors",
+    "pretransform_ckpt_path": "/deepfreeze/pnlong/ambient/sao/vae_model.ckpt",
     "sample_size": 524288,
     "sample_rate": 44100,
     "audio_channels": 2,

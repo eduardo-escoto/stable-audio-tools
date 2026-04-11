@@ -73,15 +73,18 @@ def unstrict_load_checkpoint_weights(model, checkpoint_path):
     Returns:
         (loaded_keys, skipped_keys) — lists of checkpoint parameter names.
     """
-    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-
-    # Support common checkpoint conventions
-    if "state_dict" in checkpoint:
-        ckpt_state = checkpoint["state_dict"]
-    elif "model" in checkpoint:
-        ckpt_state = checkpoint["model"]
+    if checkpoint_path.endswith(".safetensors"):
+        from safetensors.torch import load_file
+        ckpt_state = load_file(checkpoint_path, device="cpu")
     else:
-        ckpt_state = checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        # Support common checkpoint conventions
+        if "state_dict" in checkpoint:
+            ckpt_state = checkpoint["state_dict"]
+        elif "model" in checkpoint:
+            ckpt_state = checkpoint["model"]
+        else:
+            ckpt_state = checkpoint
 
     model_state = model.state_dict()
 

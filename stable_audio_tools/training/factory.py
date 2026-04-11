@@ -280,6 +280,7 @@ def create_demo_callback_from_config(model_config, **kwargs):
             t_steps=demo_config.get("t_steps", 50),
             label_key=training_config.get("label_key", "label"),
             class_names=demo_config.get("class_names", None),
+            log_snr_x_axis=demo_config.get("log_snr_x_axis", False),
         )
     else:
         raise NotImplementedError(f'Unknown model type: {model_type}')

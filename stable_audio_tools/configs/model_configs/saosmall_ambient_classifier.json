@@ -59,7 +59,7 @@
         },
         "classifier": {
             "depth_fraction": 0.5,
-            "checkpoint_path": "/path/to/sao_small.ckpt"
+            "checkpoint_path": "/deepfreeze/pnlong/ambient/sao_small/model.safetensors"
         }
     },
     "training": {
@@ -69,6 +69,7 @@
             "demo_every": 2000,
             "num_demos": 8,
             "t_steps": 50,
+            "log_snr_x_axis": true,
             "class_names": ["Low quality (sPDMX)", "High quality (Jamendo)"]
         },
         "timestep_sampler": "log_snr",

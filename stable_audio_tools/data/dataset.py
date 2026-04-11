@@ -893,7 +893,6 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
         assert audio_dir_configs is not None, "Directory configuration must be specified in datasets[\"dataset\"]"
 
         configs = []
-        top_min_noise_level = dataset_config.get("min_noise_level", None)
 
         for audio_dir_config in audio_dir_configs:
             audio_dir_path = audio_dir_config.get("path", None)
@@ -909,7 +908,7 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
 
                 custom_metadata_fn = metadata_module.get_custom_metadata
 
-            min_noise_level = audio_dir_config.get("min_noise_level", top_min_noise_level)
+            min_noise_level = audio_dir_config.get("min_noise_level", None)
 
             configs.append(
                 LocalDatasetConfig(
@@ -941,7 +940,6 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
         min_length_sec = dataset_config.get("min_length_sec", None)
         max_length_sec = dataset_config.get("max_length_sec", None)
         random_crop = dataset_config.get("random_crop", False)
-        top_min_noise_level = dataset_config.get("min_noise_level", None)
 
         configs = []
 
@@ -960,7 +958,7 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
 
                 custom_metadata_fn = metadata_module.get_custom_metadata
 
-            min_noise_level = pre_encoded_dir_config.get("min_noise_level", top_min_noise_level)
+            min_noise_level = pre_encoded_dir_config.get("min_noise_level", None)
 
             configs.append(
                 LocalDatasetConfig(

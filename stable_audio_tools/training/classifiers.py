@@ -305,6 +305,7 @@ class DiTClassifierDemoCallback(pl.Callback):
         t_steps: int = 50,
         label_key: str = "label",
         class_names: tp.Optional[tp.List[str]] = None,
+        log_snr_x_axis: bool = False,
     ):
         """
         Args:
@@ -314,6 +315,10 @@ class DiTClassifierDemoCallback(pl.Callback):
             label_key: Metadata key for the class label (must match the wrapper).
             class_names: Display names for class 0 and class 1.
                          Defaults to ["Low quality (sPDMX)", "High quality (Jamendo)"].
+            log_snr_x_axis: If True, plot x-axis in log-SNR space instead of
+                            linear t.  Uses logSNR(t) = 2·log((1−t)/t) which
+                            matches the rectified-flow schedule.  t=0 and t=1
+                            are excluded since they map to ±∞.
         """
         super().__init__()
         self.demo_every = demo_every
@@ -321,6 +326,7 @@ class DiTClassifierDemoCallback(pl.Callback):
         self.t_steps = t_steps
         self.label_key = label_key
         self.class_names = class_names or ["Low quality (label 0)", "High quality (label 1)"]
+        self.log_snr_x_axis = log_snr_x_axis
         self.last_demo_step = -1
 
         # Cached samples: populated the first time we see a batch with both classes
@@ -363,7 +369,11 @@ class DiTClassifierDemoCallback(pl.Callback):
         self.last_demo_step = trainer.global_step
         module.eval()
 
-        t_grid = torch.linspace(0, 1, self.t_steps, device=module.device)
+        # Exclude t=0 and t=1 when using log-SNR axis (they map to ±∞)
+        if self.log_snr_x_axis:
+            t_grid = torch.linspace(1e-3, 1 - 1e-3, self.t_steps, device=module.device)
+        else:
+            t_grid = torch.linspace(0, 1, self.t_steps, device=module.device)
 
         # probs[cls][t_idx] = list of per-sample probabilities
         all_probs = {0: [], 1: []}
@@ -387,10 +397,16 @@ class DiTClassifierDemoCallback(pl.Callback):
         colors = ["#e05c5c", "#5c8fe0"]   # red for bad, blue for good
         t_np = t_grid.cpu().numpy()
 
+        if self.log_snr_x_axis:
+            import numpy as np
+            x_vals = 2 * np.log((1 - t_np) / t_np)   # logSNR(t) = 2·log((1−t)/t)
+        else:
+            x_vals = t_np
+
         for cls_idx in range(2):
             mean_probs = all_probs[cls_idx]
             ax.plot(
-                t_np, mean_probs,
+                x_vals, mean_probs,
                 color=colors[cls_idx],
                 linewidth=2,
                 label=self.class_names[cls_idx],
@@ -400,8 +416,20 @@ class DiTClassifierDemoCallback(pl.Callback):
         ax.set_xlabel("Noise level (t)")
         ax.set_ylabel("p(high quality | noisy x, t)")
         ax.set_title(f"Classifier probability vs noise level — step {trainer.global_step}")
-        ax.set_xlim(0, 1)
+        ax.set_xlim(x_vals[0], x_vals[-1])
         ax.set_ylim(0, 1)
+
+        if self.log_snr_x_axis:
+            # Place ticks at evenly-spaced t values; label them as t, but position
+            # them at their corresponding log-SNR coordinate so the spacing is log-SNR.
+            # Ticks evenly spaced in log-SNR, labelled as their t equivalents
+            # t = 1 / (1 + exp(logSNR / 2))  (inverse of logSNR = 2·log((1-t)/t))
+            tick_logsnr = np.linspace(x_vals[0], x_vals[-1], 9)
+            tick_t = 1 / (1 + np.exp(tick_logsnr / 2))
+            tick_x = tick_logsnr
+            ax.set_xticks(tick_x)
+            ax.set_xticklabels([f"{v:.2f}" for v in tick_t])
+
         ax.legend(loc="center right")
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
@@ -414,6 +442,6 @@ class DiTClassifierDemoCallback(pl.Callback):
         img.load()  # force eager decode before buf can be GC'd
         plt.close(fig)
 
-        log_image(trainer.logger, "demo/classifier_probs_vs_t", img)
+        log_image(trainer.logger, "demo_classifier_probs_vs_t", img)
 
         module.train()
