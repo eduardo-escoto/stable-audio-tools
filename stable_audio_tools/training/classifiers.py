@@ -306,22 +306,23 @@ class DiTClassifierDemoCallback(pl.Callback):
         label_key: str = "label",
         class_names: tp.Optional[tp.List[str]] = None,
         log_scale_x_axis: bool = False,
-        log_scale_stretch: float = 2.0,
+        log_scale_stretch: float = 1.00005,
     ):
         """
         Args:
             demo_every: Generate a plot every this many global steps.
             num_demos: Number of samples per class to sweep over.
-            t_steps: Number of evenly-spaced noise levels to evaluate.
+            t_steps: Number of noise levels to evaluate. Steps are log-spaced
+                     via log(a/(a-t)) — the same formula as the x-axis display —
+                     so coverage is coarse near t=0 and fine near t=1.
             label_key: Metadata key for the class label (must match the wrapper).
             class_names: Display names for class 0 and class 1.
                          Defaults to ["Low quality (sPDMX)", "High quality (Jamendo)"].
             log_scale_x_axis: If True, plot x-axis as log(a/(a-t)), stretching
                               the high-noise region near t=1. Ticks labelled as t.
-            log_scale_stretch: The stretch parameter a > 1. Singularity is at t=a
-                               so the axis is always finite on [0,1]. Smaller a
-                               (closer to 1) gives more stretch near t=1; larger a
-                               gives less stretch (more linear). Default: 2.0.
+            log_scale_stretch: Stretch parameter a > 1 shared by both the t-grid
+                               sampling and the x-axis display. Closer to 1 →
+                               more extreme concentration near t=1. Default: 1.00005.
         """
         super().__init__()
         self.demo_every = demo_every
@@ -373,14 +374,23 @@ class DiTClassifierDemoCallback(pl.Callback):
         self.last_demo_step = trainer.global_step
         module.eval()
 
-        # Exclude t=1 when using log scale (-log(1-t) → ∞ at t=1)
         if self.log_scale_x_axis:
-            t_grid = torch.linspace(0, 1 - 1e-4, self.t_steps, device=module.device)
+            # Log-spaced t-grid via x(t) = log(a/(a-t)), inverse t = a(1-exp(-x)).
+            # Uses the same a as the x-axis display so the grid and plot are consistent.
+            a = self.log_scale_stretch
+            t_end = min(1 - 1e-4, a - 1e-6)
+            x_end = float(np.log(a / (a - t_end)))
+            t_grid = torch.tensor(
+                a * (1 - np.exp(-np.linspace(0, x_end, self.t_steps))),
+                dtype=torch.float32, device=module.device,
+            )
         else:
             t_grid = torch.linspace(0, 1, self.t_steps, device=module.device)
 
-        # probs[cls][t_idx] = list of per-sample probabilities
-        all_probs = {0: [], 1: []}
+        # means[cls] and stds[cls] are lists over t_idx
+        import numpy as np
+        means = {0: [], 1: []}
+        stds  = {0: [], 1: []}
 
         for cls_idx, key in enumerate(["class0", "class1"]):
             x = self._cached[key].to(module.device)
@@ -390,8 +400,9 @@ class DiTClassifierDemoCallback(pl.Callback):
                 t = torch.full((x.shape[0],), t_val.item(), device=module.device)
                 noised = module._noise(x, t)
                 logits = module.model(noised, t)
-                probs = torch.sigmoid(logits).cpu()          # (n,)
-                all_probs[cls_idx].append(probs.mean().item())
+                probs = torch.sigmoid(logits).cpu().numpy()  # (n,)
+                means[cls_idx].append(probs.mean())
+                stds[cls_idx].append(probs.std())
 
         # ------------------------------------------------------------------
         # Build the figure
@@ -402,23 +413,69 @@ class DiTClassifierDemoCallback(pl.Callback):
         t_np = t_grid.cpu().numpy()
 
         if self.log_scale_x_axis:
-            import numpy as np
             a = self.log_scale_stretch  # singularity at t=a; a>1 keeps [0,1] finite
             # x(t) = log(a / (a - t)),  inverse: t = a * (1 - exp(-x))
             x_vals = np.log(a / (a - t_np))
         else:
             x_vals = t_np
 
-        for cls_idx in range(2):
-            mean_probs = all_probs[cls_idx]
-            ax.plot(
-                x_vals, mean_probs,
+        mean0 = np.array(means[0])
+        mean1 = np.array(means[1])
+        std0  = np.array(stds[0])
+        std1  = np.array(stds[1])
+
+        # ------------------------------------------------------------------
+        # Compute marker locations (interpolated)
+        # A) first t where high-quality (class 1) curve drops below 0.5
+        # B) where high-quality and low-quality curves cross
+        # ------------------------------------------------------------------
+        marker_style = dict(color="gray", linestyle="--", linewidth=1, alpha=0.7)
+
+        t_below50 = x_below50 = None
+        for i in range(len(mean1)):
+            if not np.isnan(mean1[i]) and mean1[i] < 0.5:
+                if i == 0:
+                    t_below50, x_below50 = t_np[0], x_vals[0]
+                else:
+                    frac = (0.5 - mean1[i-1]) / (mean1[i] - mean1[i-1])
+                    t_below50 = float(t_np[i-1] + frac * (t_np[i] - t_np[i-1]))
+                    x_below50 = float(x_vals[i-1] + frac * (x_vals[i] - x_vals[i-1]))
+                break
+
+        t_cross = x_cross = y_cross = None
+        diff = mean1 - mean0
+        for i in range(1, len(diff)):
+            if not (np.isnan(diff[i-1]) or np.isnan(diff[i])) and diff[i-1] > 0 >= diff[i]:
+                frac = diff[i-1] / (diff[i-1] - diff[i])
+                t_cross = float(t_np[i-1] + frac * (t_np[i] - t_np[i-1]))
+                x_cross = float(x_vals[i-1] + frac * (x_vals[i] - x_vals[i-1]))
+                y_cross = float(mean1[i-1] + frac * (mean1[i] - mean1[i-1]))
+                break
+
+        print(f"[classifier demo step {trainer.global_step}]")
+        print(f"  High quality first drops below 0.5:  t = {t_below50:.6f}" if t_below50 is not None else "  High quality never drops below 0.5")
+        print(f"  High quality / low quality crossing:  t = {t_cross:.6f},  p = {y_cross:.4f}" if t_cross is not None else "  Curves do not cross")
+
+        for cls_idx, (mean, std) in enumerate([(mean0, std0), (mean1, std1)]):
+            ax.plot(x_vals, mean, color=colors[cls_idx], linewidth=2, label=self.class_names[cls_idx])
+            ax.fill_between(
+                x_vals,
+                np.clip(mean - std, 0, 1),
+                np.clip(mean + std, 0, 1),
                 color=colors[cls_idx],
-                linewidth=2,
-                label=self.class_names[cls_idx],
+                alpha=0.2,
             )
 
-        ax.axhline(0.5, color="gray", linestyle="--", linewidth=1, alpha=0.7, label="Decision boundary (0.5)")
+        # Decision boundary — no legend entry
+        ax.axhline(0.5, **marker_style)
+
+        # Vertical + horizontal markers
+        if x_below50 is not None:
+            ax.axvline(x_below50, **marker_style)
+        if x_cross is not None:
+            ax.axvline(x_cross, **marker_style)
+            ax.axhline(y_cross, **marker_style)
+
         ax.set_xlabel("Noise level (t)")
         ax.set_ylabel("p(high quality | noisy x, t)")
         ax.set_title(f"Classifier probability vs noise level — step {trainer.global_step}")
@@ -433,7 +490,7 @@ class DiTClassifierDemoCallback(pl.Callback):
             ax.set_xticks(tick_x)
             ax.set_xticklabels([f"{v:.2f}" for v in tick_t])
 
-        ax.legend(loc="center right")
+        ax.legend(loc="upper right")
         ax.grid(True, alpha=0.3)
         fig.tight_layout()
 

@@ -70,7 +70,7 @@
             "num_demos": 8,
             "t_steps": 50,
             "log_scale_x_axis": true,
-            "log_scale_stretch": 2.0,
+            "log_scale_stretch": 1.00005,
             "class_names": ["Low quality (sPDMX)", "High quality (Jamendo)"]
         },
         "timestep_sampler": "log_snr",

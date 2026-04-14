@@ -281,7 +281,7 @@ def create_demo_callback_from_config(model_config, **kwargs):
             label_key=training_config.get("label_key", "label"),
             class_names=demo_config.get("class_names", None),
             log_scale_x_axis=demo_config.get("log_scale_x_axis", False),
-            log_scale_stretch=demo_config.get("log_scale_stretch", 2.0),
+            log_scale_stretch=demo_config.get("log_scale_stretch", 1.00005),
         )
     else:
         raise NotImplementedError(f'Unknown model type: {model_type}')
