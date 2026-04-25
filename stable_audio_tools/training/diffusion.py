@@ -18,7 +18,7 @@ from torch.nn import functional as F
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 
 from ..interface.aeiou import pca_point_cloud, audio_spectrogram_image, tokens_spectrogram_image
-from ..inference.sampling import get_alphas_sigmas, sample, sample_discrete_euler, sample_flow_pingpong, truncated_logistic_normal_rescaled, DistributionShift, sample_timesteps_logsnr
+from ..inference.sampling import get_alphas_sigmas, sample, sample_discrete_euler, sample_flow_pingpong, truncated_logistic_normal_rescaled, DistributionShift, sample_timesteps_logsnr, sample_uniform_logsnr_in_range
 from ..models.diffusion import DiffusionModelWrapper, ConditionedDiffusionModelWrapper
 from ..models.autoencoders import DiffusionAutoencoder
 from ..models.inpainting import random_inpaint_mask
@@ -239,7 +239,9 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             validation_timesteps = [0.1, 0.3, 0.5, 0.7, 0.9],
             p_one_shot: float = 0.0,
             inpainting_config: dict = None,
-            ambient: bool = False
+            ambient: bool = False,
+            high_min_noise_threshold: tp.Optional[float] = None,
+            high_min_noise_sampler: tp.Literal["uniform", "logsnr_uniform"] = "uniform"
     ):
         super().__init__()
 
@@ -276,7 +278,8 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
 
         self.ambient = ambient
 
-        self.diffusion_objective = model.diffusion_objective
+        self.high_min_noise_threshold = high_min_noise_threshold
+        self.high_min_noise_sampler = high_min_noise_sampler
 
         # Inpainting
         self.inpainting_config = inpainting_config
@@ -446,7 +449,23 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
                 min_noise_levels.append(min_noise_level)
             min_noise_levels = torch.tensor(min_noise_levels, dtype=t.dtype, device=self.device) # Convert to tensor and move to device
             min_noise_levels = torch.clamp(min_noise_levels, min=MIN_NOISE_LEVEL, max=MAX_NOISE_LEVEL) # Ensure min_noise_levels is between 0 and 1
-            t = min_noise_levels + t * (MAX_NOISE_LEVEL - min_noise_levels) # Rescale timesteps to be between min_noise_levels and 1
+
+            # Rescale timesteps to be between min_noise_levels and 1
+            t = min_noise_levels + t * (MAX_NOISE_LEVEL - min_noise_levels)
+
+            # For samples whose min_noise_level is at or above the threshold, bypass the
+            # base distribution entirely and sample t directly over [min_noise_level, 1]
+            # using a simpler distribution that isn't distorted by the narrow window.
+            if self.high_min_noise_threshold is not None:
+                is_above_high_min_noise_threshold = min_noise_levels >= self.high_min_noise_threshold
+                if self.high_min_noise_sampler == "uniform": # uniform sampling in the range [min_noise_level, 1]
+                    t_above_high_min_noise_threshold = min_noise_levels + torch.rand_like(t) * (MAX_NOISE_LEVEL - min_noise_levels)
+                elif self.high_min_noise_sampler == "logsnr_uniform": # uniform sampling in log-SNR space over [min_noise_level, 1]
+                    t_above_high_min_noise_threshold = sample_uniform_logsnr_in_range(min_noise_levels)
+                else:
+                    raise ValueError(f"Invalid high_min_noise_sampler: {self.high_min_noise_sampler}")
+                t = torch.where(is_above_high_min_noise_threshold, t_above_high_min_noise_threshold, t)                
+
             min_noise_levels = min_noise_levels[:, None, None] # Expand dimensions to match x_0 with shape (batch_size, 1, 1)
             loss_info["min_noise_levels"] = min_noise_levels # Store min_noise_levels in loss_info for potential use by ambient loss
 

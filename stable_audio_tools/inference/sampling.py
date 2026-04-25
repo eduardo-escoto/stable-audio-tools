@@ -64,6 +64,36 @@ def sample_timesteps_logsnr(batch_size, mean_logsnr=-1.2, std_logsnr=2.0):
     t = t.clamp(1e-4, 1 - 1e-4)
 
     return t
+
+def sample_uniform_logsnr_in_range(t_min: torch.Tensor, t_max_eps: float = 1 - 1e-4) -> torch.Tensor:
+    """Sample t uniformly in log-SNR space over [t_min, t_max_eps] for each sample.
+
+    Uses the RF-style log-SNR convention: logsnr(t) = log((1-t)/t), which is a
+    decreasing function of t.  A uniform draw in logsnr space therefore places
+    more mass near t_min (high SNR, mild noise) relative to a uniform-in-t draw.
+
+    Args:
+        t_min: tensor of shape (batch,) containing per-sample lower bounds for t.
+        t_max_eps: scalar upper bound for t (default: 1 - 1e-4 for numerical stability).
+
+    Returns:
+        Tensor of shape (batch,) with t values sampled in [t_min_clamped, t_max_eps].
+    """
+    t_min_clamped = t_min.clamp(1e-4, t_max_eps - 1e-6)
+
+    # logsnr is decreasing in t, so logsnr at t_min > logsnr at t_max_eps
+    logsnr_at_t_min = torch.log((1 - t_min_clamped) / t_min_clamped)
+    logsnr_at_t_max = math.log((1 - t_max_eps) / t_max_eps)
+
+    # Sample uniformly in [logsnr_at_t_max, logsnr_at_t_min]
+    u = torch.rand_like(t_min_clamped)
+    logsnr_sample = logsnr_at_t_max + u * (logsnr_at_t_min - logsnr_at_t_max)
+
+    # Convert back to t via sigmoid(-logsnr)
+    t = torch.sigmoid(-logsnr_sample)
+    return t.clamp(t_min_clamped, t_max_eps)
+
+
 def truncated_logistic_normal_rescaled(shape, left_trunc=0.075, right_trunc=1):
     """
 
