@@ -277,6 +277,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         self.p_one_shot = p_one_shot
 
         self.ambient = ambient
+        self.diffusion_objective = self.diffusion.diffusion_objective
 
         self.high_min_noise_threshold = high_min_noise_threshold
         self.high_min_noise_sampler = high_min_noise_sampler
@@ -461,7 +462,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
                 if self.high_min_noise_sampler == "uniform": # uniform sampling in the range [min_noise_level, 1]
                     t_above_high_min_noise_threshold = min_noise_levels + torch.rand_like(t) * (MAX_NOISE_LEVEL - min_noise_levels)
                 elif self.high_min_noise_sampler == "logsnr_uniform": # uniform sampling in log-SNR space over [min_noise_level, 1]
-                    t_above_high_min_noise_threshold = sample_uniform_logsnr_in_range(min_noise_levels)
+                    t_above_high_min_noise_threshold = sample_uniform_logsnr_in_range(t_min = min_noise_levels, t_max_eps = MAX_NOISE_LEVEL - 1e-6) # subtract 1e-6 to ensure numerical stability in log-SNR space
                 else:
                     raise ValueError(f"Invalid high_min_noise_sampler: {self.high_min_noise_sampler}")
                 t = torch.where(is_above_high_min_noise_threshold, t_above_high_min_noise_threshold, t)                
