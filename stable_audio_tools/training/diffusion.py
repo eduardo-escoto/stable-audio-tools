@@ -498,7 +498,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         noise = torch.randn_like(diffusion_input)
         if self.ambient:
             alpha_t, sigma_t = alphas, sigmas # alias for readability
-            noised_inputs = (alpha_t / (alpha_t_min + 1e-8)) * x_t_min + (torch.sqrt((alpha_t_min**2 * sigma_t**2) - (alpha_t**2 * sigma_t_min**2)) / (alpha_t_min + 1e-8)) * noise
+            noised_inputs = (alpha_t / (alpha_t_min + 1e-8)) * x_t_min + (torch.sqrt(((alpha_t_min**2 * sigma_t**2) - (alpha_t**2 * sigma_t_min**2)).clamp(min = 0)) / (alpha_t_min + 1e-8)) * noise # clamp square root to non-negative values to ensure numerical stability
         else:
             noised_inputs = diffusion_input * alphas + noise * sigmas
 
