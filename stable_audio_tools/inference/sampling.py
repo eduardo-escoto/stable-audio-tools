@@ -79,7 +79,14 @@ def sample_uniform_logsnr_in_range(t_min: torch.Tensor, t_max_eps: float = 1 - 1
     Returns:
         Tensor of shape (batch,) with t values sampled in [t_min_clamped, t_max_eps].
     """
-    t_min_clamped = t_min.clamp(1e-4, t_max_eps - 1e-6)
+    # Validate t_max_eps is less than 1
+    if t_max_eps >= 1:
+        raise ValueError(f"t_max_eps must be less than 1 for numerical stability (since log((1-t)/t) is undefined at t=1), got {t_max_eps}")
+
+    # Promote to float32 for all log/sigmoid operations. In float16, values like
+    # 0.999998 round to exactly 1.0, making (1 - t) = 0, log(0) = -inf, and
+    # 0 * -inf = NaN. float32 keeps enough ULPs of separation near 1.0 to avoid this.
+    t_min_clamped = t_min.to(torch.float32).clamp(min = 1e-4, max = t_max_eps - 1e-6)
 
     # logsnr is decreasing in t, so logsnr at t_min > logsnr at t_max_eps
     logsnr_at_t_min = torch.log((1 - t_min_clamped) / t_min_clamped)
@@ -95,6 +102,9 @@ def sample_uniform_logsnr_in_range(t_min: torch.Tensor, t_max_eps: float = 1 - 1
     # Clamp values to specified range, clamp separately since t_min_clamped is a tensor and t_max_eps is a scalar
     t = t.clamp(min = t_min_clamped)
     t = t.clamp(max = t_max_eps)
+
+    # Convert back to original dtype
+    t = t.to(t_min.dtype)
     
     return t
 
