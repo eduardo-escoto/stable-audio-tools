@@ -91,7 +91,12 @@ def sample_uniform_logsnr_in_range(t_min: torch.Tensor, t_max_eps: float = 1 - 1
 
     # Convert back to t via sigmoid(-logsnr)
     t = torch.sigmoid(-logsnr_sample)
-    return t.clamp(t_min_clamped, t_max_eps)
+
+    # Clamp values to specified range, clamp separately since t_min_clamped is a tensor and t_max_eps is a scalar
+    t = t.clamp(min = t_min_clamped)
+    t = t.clamp(max = t_max_eps)
+    
+    return t
 
 
 def truncated_logistic_normal_rescaled(shape, left_trunc=0.075, right_trunc=1):

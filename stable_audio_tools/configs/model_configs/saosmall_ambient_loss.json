@@ -91,7 +91,7 @@
     "training": {
         "ambient": true,
         "high_min_noise_threshold": 0.95,
-        "high_min_noise_sampler": "uniform",
+        "high_min_noise_sampler": "logsnr_uniform",
         "use_ema": false,
         "log_loss_info": false,
         "pre_encoded": true,
