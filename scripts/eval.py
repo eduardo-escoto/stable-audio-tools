@@ -37,13 +37,13 @@ Usage — GPU (pick the card with CUDA_VISIBLE_DEVICES; default device is CPU):
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 
 # Ensure the repo root is on the path when running from scripts/
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -57,6 +57,13 @@ from _utils import load_model, resolve_prompts, save_audio
 # ---------------------------------------------------------------------------
 # Generation
 # ---------------------------------------------------------------------------
+
+def _prompt_postfix(text: str, max_len: int = 55) -> str:
+    t = " ".join((text or "").split())
+    if len(t) > max_len:
+        return t[: max_len - 1] + "…"
+    return t if t else "(no prompt)"
+
 
 def generate_samples(
     model_config: dict,
@@ -82,32 +89,43 @@ def generate_samples(
     model = load_model(model_config, ckpt_path, device)
 
     pairs = []
-    for i in range(num_samples):
-        cond_dict = prompts[i % len(prompts)]
-        prompt_text = cond_dict.get("prompt", "")
-        wav_path = generated_dir / f"{i:05d}.wav"
-        txt_path = generated_dir / f"{i:05d}.txt"
+    with tqdm(
+        total=num_samples,
+        desc="Generate",
+        unit="clip",
+        dynamic_ncols=True,
+    ) as pbar:
+        for i in range(num_samples):
+            cond_dict = prompts[i % len(prompts)]
+            prompt_text = cond_dict.get("prompt", "")
+            wav_path = generated_dir / f"{i:05d}.wav"
+            txt_path = generated_dir / f"{i:05d}.txt"
 
-        torch.manual_seed(seed + i)
-        try:
-            with torch.inference_mode():
-                audio = generate_diffusion_cond(
-                    model,
-                    steps=steps,
-                    cfg_scale=cfg_scale,
-                    conditioning=[cond_dict],
-                    batch_size=1,
-                    sample_size=sample_size,
-                    sample_rate=sample_rate,
-                    seed=seed + i,
-                    device=str(device),
-                )
-            save_audio(audio[0], str(wav_path), sample_rate)
-            txt_path.write_text(prompt_text)
-            pairs.append((wav_path, prompt_text))
-            print(f"  [{i + 1}/{num_samples}] {wav_path.name}  prompt: {prompt_text[:60]!r}")
-        except Exception as exc:
-            print(f"  [{i + 1}/{num_samples}] FAILED: {type(exc).__name__}: {exc}")
+            pbar.set_postfix_str(_prompt_postfix(prompt_text), refresh=False)
+
+            torch.manual_seed(seed + i)
+            try:
+                with torch.inference_mode():
+                    audio = generate_diffusion_cond(
+                        model,
+                        steps=steps,
+                        cfg_scale=cfg_scale,
+                        conditioning=[cond_dict],
+                        batch_size=1,
+                        sample_size=sample_size,
+                        sample_rate=sample_rate,
+                        seed=seed + i,
+                        device=str(device),
+                        disable_tqdm=True,
+                        quiet=True,
+                    )
+                save_audio(audio[0], str(wav_path), sample_rate)
+                txt_path.write_text(prompt_text)
+                pairs.append((wav_path, prompt_text))
+            except Exception as exc:
+                pbar.set_postfix_str(f"FAILED {type(exc).__name__}", refresh=True)
+                tqdm.write(f"  [{i + 1}/{num_samples}] FAILED: {type(exc).__name__}: {exc}")
+            pbar.update(1)
 
     del model
     torch.cuda.empty_cache()
