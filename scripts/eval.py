@@ -30,6 +30,9 @@ Usage — skip generation (audio already in <output-dir>/generated/):
 
 Usage — CLAP Score only (no reference corpus needed):
     python scripts/eval.py ... --no-fad
+
+Usage — GPU (pick the card with CUDA_VISIBLE_DEVICES; default device is CPU):
+    CUDA_VISIBLE_DEVICES=0 python scripts/eval.py ... --gpu
 """
 
 import argparse
@@ -335,9 +338,10 @@ def build_parser() -> argparse.ArgumentParser:
              "Generated audio goes to <output-dir>/generated/.",
     )
     parser.add_argument(
-        "--device",
-        default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Device for inference and metric computation (default: cuda if available).",
+        "--gpu",
+        action="store_true",
+        help="Use CUDA for inference and CLAP (omit for CPU). "
+             "Set CUDA_VISIBLE_DEVICES to select the GPU.",
     )
 
     return parser
@@ -356,7 +360,12 @@ def main():
     if args.embeddings is None:
         args.embeddings = ["vggish"]
 
-    device = torch.device(args.device)
+    if args.gpu:
+        if not torch.cuda.is_available():
+            parser.error("--gpu requested but CUDA is not available.")
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
     output_dir = Path(args.output_dir)
     generated_dir = output_dir / "generated"
     generated_dir.mkdir(parents=True, exist_ok=True)
