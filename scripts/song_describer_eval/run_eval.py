@@ -16,7 +16,9 @@ Typical flow:
 By default each run **resumes** if ``<output>/generated/`` already has all expected
 ``*.wav`` + sidecar ``*.txt`` files (00000 … num_samples-1) and the saved manifest's
 ``num_samples`` matches the current preprocess. Those runs invoke eval.py with
-``--skip-generation`` (FAD / CLAP only). Use ``--reset`` to always regenerate audio.
+``--skip-generation`` (FAD / CLAP only). If ``metrics.json`` already has the requested
+FAD keys (non-null) and CLAP score when applicable, the eval subprocess is skipped
+entirely. Use ``--reset`` to force regeneration and to force FAD/CLAP to be recomputed.
 
 Any extra CLI tokens are forwarded to eval.py (e.g. --embedding clap-laion-music).
 Use --gpu to add eval.py's --gpu flag for each run (CUDA_VISIBLE_DEVICES selects the GPU).
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +71,79 @@ def meta_num_samples_compatible(meta_path: Path, num_samples: int) -> bool:
         return int(old) == int(num_samples)
     except (TypeError, ValueError):
         return True
+
+
+def _eval_extra_has_flag(extra: list[str], flag: str) -> bool:
+    """True if ``flag`` appears as its own token or as ``--name=value``."""
+    prefix = f"{flag}="
+    return flag in extra or any(a.startswith(prefix) for a in extra)
+
+
+def _embeddings_from_eval_extra(extra: list[str]) -> list[str]:
+    """Tokens after ``--embedding`` / ``--embedding=``, mirroring eval.py defaults."""
+    out: list[str] = []
+    i = 0
+    while i < len(extra):
+        tok = extra[i]
+        if tok == "--embedding" and i + 1 < len(extra):
+            out.append(extra[i + 1])
+            i += 2
+            continue
+        if tok.startswith("--embedding="):
+            out.append(tok.split("=", 1)[1])
+            i += 1
+            continue
+        i += 1
+    return out
+
+
+def metrics_json_complete(
+    metrics_path: Path,
+    *,
+    clap_expected: bool,
+    fad_keys_expected: list[str] | None,
+) -> bool:
+    """True when saved metrics match what this eval command would compute."""
+    if not metrics_path.is_file():
+        return False
+    try:
+        m = json.loads(metrics_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+
+    if clap_expected:
+        if m.get("clap_score") is None:
+            return False
+
+    if fad_keys_expected is not None:
+        fad = m.get("fad")
+        if not isinstance(fad, dict):
+            return False
+        for k in fad_keys_expected:
+            if fad.get(k) is None:
+                return False
+
+    return True
+
+
+def _finite_floats(values: list[float]) -> list[float]:
+    return [x for x in values if math.isfinite(x)]
+
+
+def _tight_xlim_with_pad(ax, series: list[float], *, pad_frac: float = 0.08) -> None:
+    """Set x-axis limits from data range + padding (do not pin at zero)."""
+    vals = _finite_floats(series)
+    if not vals:
+        return
+    lo, hi = min(vals), max(vals)
+    if lo == hi:
+        pad = 0.05 * (abs(lo) + 1.0)
+        ax.set_xlim(lo - pad, hi + pad)
+        return
+    span = hi - lo
+    pad = max(span * pad_frac, 1e-9)
+    ax.set_xlim(lo - pad, hi + pad)
+
 
 def load_runs(path: Path | None) -> list[dict]:
     if path is None:
@@ -128,40 +204,86 @@ def summarize_runs(storage_root: Path) -> None:
     # Plot(s)
     try:
         import matplotlib.pyplot as plt
+        from matplotlib.ticker import MaxNLocator
     except ImportError:
         print("matplotlib not installed; skipped summary.png (CSV only).", file=sys.stderr)
         return
 
     names = [r["run"] for r in rows]
     n = len(names)
-    fig, axes = plt.subplots(1, 2, figsize=(max(8.0, n * 0.45), 5.0))
+    max_label = max((len(str(nm)) for nm in names), default=12)
+
+    # Figure size: height from #runs (horizontal bars); width from label gutter + value panel(s).
+    row_h_in = 0.34
+    fig_h = max(3.6, 1.35 + n * row_h_in)
+    left_gutter_in = 0.75 + 0.11 * min(max_label, 52)
+    panel_w_in = max(3.45, fig_h * 0.40)
+    fad_plot_keys = [k for k in all_keys if k.startswith("fad_")]
+    share_y = bool(fad_plot_keys)
+    if share_y:
+        fig_w = left_gutter_in + 2.0 * panel_w_in + 0.4
+    else:
+        fig_w = left_gutter_in + panel_w_in + 1.35
+
+    fig, axes = plt.subplots(1, 2, figsize=(fig_w, fig_h), sharey=share_y)
     ax_clap, ax_fad = axes[0], axes[1]
 
-    clap_vals = [float(r["clap_score"]) if r.get("clap_score") != "" else float("nan") for r in rows]
-    x = range(n)
-    ax_clap.bar(x, clap_vals, color="steelblue")
-    ax_clap.set_xticks(list(x))
-    ax_clap.set_xticklabels(names, rotation=45, ha="right")
-    ax_clap.set_ylabel("CLAP score (↑ better)")
-    ax_clap.set_title("Song Describer — text–audio alignment")
+    def _xaxis_nice_ticks(ax, nbins: int = 6) -> None:
+        ax.xaxis.set_major_locator(
+            MaxNLocator(nbins=nbins, min_n_ticks=4, prune=None)
+        )
 
-    fad_keys = [k for k in all_keys if k.startswith("fad_")]
-    if fad_keys:
-        width = 0.8 / len(fad_keys)
-        for i, fk in enumerate(fad_keys):
-            offs = [xi + (i - len(fad_keys) / 2 + 0.5) * width for xi in x]
-            vals = [float(r[fk]) if r.get(fk) not in ("", None) else float("nan") for r in rows]
+    y = list(range(n))
+    clap_bar_height = 0.65
+    clap_vals = [
+        float(r["clap_score"]) if r.get("clap_score") != "" else float("nan") for r in rows
+    ]
+    ax_clap.barh(y, clap_vals, color="steelblue", height=clap_bar_height)
+    ax_clap.set_yticks(y)
+    ax_clap.set_yticklabels(names)
+    ax_clap.set_xlabel("CLAP score (↑ better)")
+    ax_clap.set_title("Song Describer — text–audio alignment")
+    _tight_xlim_with_pad(ax_clap, clap_vals)
+    _xaxis_nice_ticks(ax_clap)
+
+    if fad_plot_keys:
+        n_emb = len(fad_plot_keys)
+        # One FAD backend: match CLAP bar thickness. Several: split row height between series.
+        if n_emb == 1:
+            fad_slot_h = clap_bar_height
+            fad_draw_h = clap_bar_height
+        else:
+            fad_slot_h = min(0.75 / n_emb, 0.2)
+            fad_draw_h = fad_slot_h * 0.92
+        for i, fk in enumerate(fad_plot_keys):
+            if n_emb == 1:
+                ypos = y
+            else:
+                offset = (i - (n_emb - 1) / 2.0) * fad_slot_h
+                ypos = [yj + offset for yj in y]
+            vals = [
+                float(r[fk]) if r.get(fk) not in ("", None) else float("nan") for r in rows
+            ]
             label = fk.replace("fad_", "")
-            ax_fad.bar(offs, vals, width=width, label=label)
-        ax_fad.set_xticks(list(x))
-        ax_fad.set_xticklabels(names, rotation=45, ha="right")
-        ax_fad.set_ylabel("FAD (↓ better)")
+            ax_fad.barh(ypos, vals, height=fad_draw_h, label=label)
+        ax_fad.set_xlabel("FAD (↓ better)")
         ax_fad.set_title("Song Describer — distribution vs reference")
         ax_fad.legend(fontsize=8)
+        # Shared y: only left panel shows run labels.
+        ax_fad.tick_params(axis="y", left=False, labelleft=False)
+        fad_all_vals: list[float] = []
+        for fk in fad_plot_keys:
+            for r in rows:
+                v = r.get(fk)
+                if v != "" and v is not None:
+                    fad_all_vals.append(float(v))
+        _tight_xlim_with_pad(ax_fad, fad_all_vals)
+        _xaxis_nice_ticks(ax_fad)
     else:
-        ax_fad.text(0.5, 0.5, "No FAD columns", ha="center", va="center")
+        ax_fad.text(0.5, 0.5, "No FAD columns", ha="center", va="center", transform=ax_fad.transAxes)
         ax_fad.set_axis_off()
 
+    ax_clap.invert_yaxis()
     fig.tight_layout()
     png_path = storage_root / "summary.png"
     fig.savefig(png_path, dpi=150, bbox_inches="tight")
@@ -233,7 +355,7 @@ def main() -> None:
     parser.add_argument(
         "--reset",
         action="store_true",
-        help="Always run full generation for every run (ignore existing generated/)",
+        help="Ignore resume: regenerate audio, rerun FAD/CLAP, rewrite metrics",
     )
 
     args, eval_extra = parser.parse_known_args()
@@ -307,15 +429,38 @@ def main() -> None:
             and generation_artifacts_complete(generated_dir, num_samples)
         )
 
+        clap_expected = not _eval_extra_has_flag(eval_extra, "--no-clap-score")
+        if use_fad and not _eval_extra_has_flag(eval_extra, "--no-fad"):
+            fad_keys_for_meta = _embeddings_from_eval_extra(eval_extra) or ["vggish"]
+        else:
+            fad_keys_for_meta = None
+
+        metrics_path = out_dir / "metrics.json"
+        metrics_ok = metrics_json_complete(
+            metrics_path,
+            clap_expected=clap_expected,
+            fad_keys_expected=fad_keys_for_meta,
+        )
+        skip_eval = not args.reset and skip_generation and metrics_ok
+
         cmd: list[str] = [
             sys.executable,
             str(EVAL_SCRIPT),
             "--output-dir",
             str(out_dir),
         ]
+        if skip_eval:
+            print(
+                f"[resume] {name}: generation + metrics complete → skip eval.py",
+                file=sys.stderr,
+            )
+            continue
         if skip_generation:
             cmd.append("--skip-generation")
-            print(f"[resume] {name}: generation complete → eval.py --skip-generation", file=sys.stderr)
+            print(
+                f"[resume] {name}: generation complete → eval.py --skip-generation",
+                file=sys.stderr,
+            )
         else:
             cmd.extend(
                 [
