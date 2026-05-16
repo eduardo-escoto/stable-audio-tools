@@ -36,8 +36,13 @@ Usage — GPU (pick the card with CUDA_VISIBLE_DEVICES; default device is CPU):
 """
 
 import argparse
+import contextlib
 import json
+import logging
+import os
 import sys
+import warnings
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -156,6 +161,52 @@ def load_existing_pairs(generated_dir: Path) -> list[tuple[Path, str | None]]:
 # FAD via fadtk
 # ---------------------------------------------------------------------------
 
+def _fadtk_loader_by_name(emb_name: str):
+    """Return a concrete ModelLoader instance for ``emb_name`` (current fadtk API).
+
+    fadtk's ``ModelLoader`` base class is abstract; backends are pre-built in
+    ``get_all_models()`` (e.g. ``vggish``, ``clap-laion-music``).
+    """
+    from fadtk.model_loader import get_all_models
+
+    models = {m.name: m for m in get_all_models()}
+    if emb_name not in models:
+        hint = ", ".join(sorted(models.keys())[:12])
+        if len(models) > 12:
+            hint += ", …"
+        raise KeyError(f"unknown embedding {emb_name!r}. Examples: {hint}")
+    return models[emb_name]
+
+
+_FADTK_AUDIO_SUFFIXES = frozenset(
+    {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".opus", ".webm"}
+)
+
+
+def _fadtk_audio_files_in_dir(root: Path) -> list[Path]:
+    """Audio files directly under ``root`` (non-recursive), excluding sidecars like ``.txt``.
+
+    fadtk's ``cache_embedding_files(..., path)`` globs ``*.*``, which would
+    mistake ``.txt`` prompts next to ``.wav`` in ``generated/`` for audio.
+    """
+    if not root.is_dir():
+        return []
+    return sorted(
+        p
+        for p in root.iterdir()
+        if p.is_file() and p.suffix.lower() in _FADTK_AUDIO_SUFFIXES
+    )
+
+
+@contextmanager
+def _suppress_torchaudio_user_warnings():
+    """Ignore noisy torchaudio UserWarnings (TorchCodec kwargs, deprecated transform args, …)."""
+    with warnings.catch_warnings():
+        # Module filter uses re.match from the start of the emitting module's __name__.
+        warnings.filterwarnings("ignore", category=UserWarning, module="torchaudio")
+        yield
+
+
 def compute_fad(
     reference_dir: str,
     generated_dir: Path,
@@ -164,18 +215,46 @@ def compute_fad(
     """Compute FAD for each requested embedding model. Returns {emb_name: score}."""
     try:
         from fadtk import FrechetAudioDistance
-        from fadtk.model_loader import ModelLoader
     except ImportError as exc:
         raise ImportError(
             "fadtk is required for FAD computation. Install it with: pip install fadtk"
         ) from exc
 
+    reference_root = Path(reference_dir)
+    ref_audio = _fadtk_audio_files_in_dir(reference_root)
+    gen_audio = _fadtk_audio_files_in_dir(generated_dir)
+    if not ref_audio:
+        raise FileNotFoundError(
+            f"No audio files found under {reference_root} for FAD. "
+            f"Expected one of: {', '.join(sorted(_FADTK_AUDIO_SUFFIXES))}"
+        )
+    if not gen_audio:
+        raise FileNotFoundError(
+            f"No audio files found under {generated_dir} for FAD. "
+            f"Expected one of: {', '.join(sorted(_FADTK_AUDIO_SUFFIXES))}"
+        )
+
     scores = {}
     for emb_name in embeddings:
         print(f"\n  FAD [{emb_name}]: computing embeddings …")
         try:
-            fad = FrechetAudioDistance(ModelLoader(emb_name), audio_load_worker=4)
-            score = fad.score(reference_dir, str(generated_dir))
+            loader = _fadtk_loader_by_name(emb_name)
+            with _suppress_torchaudio_user_warnings():
+                fad = FrechetAudioDistance(loader, audio_load_worker=4)
+                # fadtk's score() -> load_stats() only reads path/embeddings/<model>/*.npy.
+                # Raw WAV/MP3 dirs have no npys yet; cache per-file first or stats assert fails.
+                for label, paths in (
+                    ("reference", ref_audio),
+                    ("generated", gen_audio),
+                ):
+                    for wav_path in tqdm(
+                        paths,
+                        desc=f"  FAD [{emb_name}] {label}",
+                        unit="file",
+                        leave=False,
+                    ):
+                        fad.cache_embedding_file(wav_path)
+                score = fad.score(reference_dir, str(generated_dir))
             scores[emb_name] = float(score)
             print(f"  FAD [{emb_name}]: {score:.4f}")
         except Exception as exc:
@@ -187,6 +266,37 @@ def compute_fad(
 # ---------------------------------------------------------------------------
 # CLAP Score via laion-clap
 # ---------------------------------------------------------------------------
+
+@contextmanager
+def _clap_load_quiet():
+    """Silence laion-clap / transformers logging, warnings, and stdout prints during init + load_ckpt."""
+    root = logging.getLogger()
+    old_root_level = root.level
+    root.setLevel(logging.WARNING)
+    tf_verbosity = None
+    try:
+        import transformers
+
+        tf_verbosity = transformers.logging.get_verbosity()
+        transformers.logging.set_verbosity_error()
+    except Exception:
+        pass
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with open(os.devnull, "w", encoding="utf-8") as dn:
+                with contextlib.redirect_stdout(dn):
+                    yield
+    finally:
+        root.setLevel(old_root_level)
+        if tf_verbosity is not None:
+            try:
+                import transformers
+
+                transformers.logging.set_verbosity(tf_verbosity)
+            except Exception:
+                pass
+
 
 def compute_clap_score(
     pairs: list[tuple[Path, str | None]],
@@ -218,26 +328,51 @@ def compute_clap_score(
         print(f"  CLAP Score: {skipped} file(s) missing sidecar .txt — excluded from scoring.")
 
     print(f"\n  CLAP Score: loading model …")
-    clap = laion_clap.CLAP_Module(enable_fusion=True, device=str(device))
-    # load_ckpt with no args downloads the default checkpoint;
-    # a local path can be passed to use a custom checkpoint.
-    if clap_model_path:
-        clap.load_ckpt(clap_model_path)
-    else:
-        clap.load_ckpt()
+    with _clap_load_quiet():
+        clap = laion_clap.CLAP_Module(enable_fusion=True, device=str(device))
+        # load_ckpt with no args downloads the default checkpoint;
+        # a local path can be passed to use a custom checkpoint.
+        if clap_model_path:
+            clap.load_ckpt(clap_model_path, verbose=False)
+        else:
+            clap.load_ckpt(verbose=False)
 
     wav_paths = [str(p) for p, _ in valid_pairs]
     texts = [t for _, t in valid_pairs]
 
-    print(f"  CLAP Score: scoring {len(valid_pairs)} clips …")
-    with torch.no_grad():
-        audio_embs = clap.get_audio_embedding_from_filelist(wav_paths, use_tensor=True)
-        text_embs = clap.get_text_embedding(texts, use_tensor=True)
+    n = len(wav_paths)
+    # Batched forwards: bounded GPU memory and lets tqdm reflect per-clip progress.
+    _clap_batch = 32
+    print(f"  CLAP Score: scoring {n} clips …")
+    with torch.no_grad(), _suppress_torchaudio_user_warnings():
+        with tqdm(
+            total=n * 2,
+            desc="  CLAP Score",
+            unit="clip",
+            dynamic_ncols=True,
+        ) as pbar:
+            audio_chunks: list[torch.Tensor] = []
+            pbar.set_postfix_str("audio", refresh=False)
+            for i in range(0, n, _clap_batch):
+                batch_paths = wav_paths[i : i + _clap_batch]
+                audio_chunks.append(
+                    clap.get_audio_embedding_from_filelist(batch_paths, use_tensor=True)
+                )
+                pbar.update(len(batch_paths))
+            audio_embs = torch.cat(audio_chunks, dim=0)
+
+            text_chunks: list[torch.Tensor] = []
+            pbar.set_postfix_str("text", refresh=False)
+            for i in range(0, n, _clap_batch):
+                batch_texts = texts[i : i + _clap_batch]
+                text_chunks.append(clap.get_text_embedding(batch_texts, use_tensor=True))
+                pbar.update(len(batch_texts))
+            text_embs = torch.cat(text_chunks, dim=0)
 
     # Both tensors: (N, D) — compute per-sample cosine similarity then average
     sims = F.cosine_similarity(audio_embs, text_embs, dim=-1)
     score = float(sims.mean().item())
-    print(f"  CLAP Score: {score:.4f}  (mean over {len(valid_pairs)} clips)")
+    print(f"  CLAP Score: {score:.4f}  (mean over {n} clips)")
     return score
 
 
@@ -332,9 +467,9 @@ def build_parser() -> argparse.ArgumentParser:
     eval_group.add_argument(
         "--embedding", dest="embeddings", action="append",
         default=None, metavar="NAME",
-        help="FAD embedding backend (default: vggish). Repeat to run multiple, "
-             "e.g. --embedding vggish --embedding clap-laion-music. "
-             "See fadtk docs for all supported names.",
+        help="FAD embedding backend (default: vggish). Repeat to run multiple. "
+             "Names match fadtk model_loader.get_all_models() .name "
+             "(e.g. vggish, clap-laion-music, encodec-emb).",
     )
     eval_group.add_argument(
         "--clap-model", default=None, metavar="PATH_OR_NAME",

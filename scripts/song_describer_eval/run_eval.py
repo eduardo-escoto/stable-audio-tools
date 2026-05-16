@@ -13,6 +13,11 @@ Typical flow:
   2. python scripts/song_describer_eval/run_eval.py --runs-json runs.json
   3. Inspect /deepfreeze/pnlong/ambient/song_describer_eval/summary.csv and summary.png
 
+By default each run **resumes** if ``<output>/generated/`` already has all expected
+``*.wav`` + sidecar ``*.txt`` files (00000 … num_samples-1) and the saved manifest's
+``num_samples`` matches the current preprocess. Those runs invoke eval.py with
+``--skip-generation`` (FAD / CLAP only). Use ``--reset`` to always regenerate audio.
+
 Any extra CLI tokens are forwarded to eval.py (e.g. --embedding clap-laion-music).
 Use --gpu to add eval.py's --gpu flag for each run (CUDA_VISIBLE_DEVICES selects the GPU).
 """
@@ -32,6 +37,37 @@ EVAL_SCRIPT = REPO_ROOT / "scripts" / "eval.py"
 DEFAULT_STORAGE = Path("/deepfreeze/pnlong/ambient/song_describer_eval")
 DEFAULT_CACHE = DEFAULT_STORAGE / "cache"
 
+
+def generation_artifacts_complete(generated_dir: Path, num_samples: int) -> bool:
+    """True when eval.py-style outputs exist: 00000..(N-1).wav and matching .txt sidecars."""
+    if num_samples <= 0:
+        return False
+    if not generated_dir.is_dir():
+        return False
+    for i in range(num_samples):
+        base = generated_dir / f"{i:05d}"
+        if not base.with_suffix(".wav").is_file():
+            return False
+        if not base.with_suffix(".txt").is_file():
+            return False
+    return True
+
+
+def meta_num_samples_compatible(meta_path: Path, num_samples: int) -> bool:
+    """False if a previous run recorded a different num_samples (preprocess changed)."""
+    if not meta_path.is_file():
+        return True
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return True
+    old = meta.get("num_samples")
+    if old is None:
+        return True
+    try:
+        return int(old) == int(num_samples)
+    except (TypeError, ValueError):
+        return True
 
 def load_runs(path: Path | None) -> list[dict]:
     if path is None:
@@ -194,6 +230,11 @@ def main() -> None:
         action="store_true",
         help="Add --gpu to each eval.py subprocess (use CUDA_VISIBLE_DEVICES to pick the GPU)",
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Always run full generation for every run (ignore existing generated/)",
+    )
 
     args, eval_extra = parser.parse_known_args()
 
@@ -248,8 +289,10 @@ def main() -> None:
             raise ValueError(f"Each run needs name, model_config, ckpt; got {spec}")
         out_dir = runs_root / name
         out_dir.mkdir(parents=True, exist_ok=True)
+        generated_dir = out_dir / "generated"
 
         meta_path = out_dir / "sdd_run_meta.json"
+        meta_ok = meta_num_samples_compatible(meta_path, num_samples)
         meta_path.write_text(
             json.dumps(
                 {"name": name, "model_config": mc, "ckpt": ck, "num_samples": num_samples},
@@ -258,20 +301,34 @@ def main() -> None:
             encoding="utf-8",
         )
 
-        cmd = [
+        skip_generation = (
+            not args.reset
+            and meta_ok
+            and generation_artifacts_complete(generated_dir, num_samples)
+        )
+
+        cmd: list[str] = [
             sys.executable,
             str(EVAL_SCRIPT),
-            "--model-config",
-            mc,
-            "--ckpt",
-            ck,
-            "--prompts-json",
-            str(prompts_json.resolve()),
-            "--num-samples",
-            str(num_samples),
             "--output-dir",
             str(out_dir),
         ]
+        if skip_generation:
+            cmd.append("--skip-generation")
+            print(f"[resume] {name}: generation complete → eval.py --skip-generation", file=sys.stderr)
+        else:
+            cmd.extend(
+                [
+                    "--model-config",
+                    mc,
+                    "--ckpt",
+                    ck,
+                    "--prompts-json",
+                    str(prompts_json.resolve()),
+                    "--num-samples",
+                    str(num_samples),
+                ]
+            )
         if use_fad:
             cmd.extend(["--reference-dir", str(ref_dir.resolve())])
         else:
