@@ -1,0 +1,44 @@
+{
+  "runs": [
+    {
+      "name": "t_min=0 (baseline)",
+      "model_config": "/home/pnlong/stable-audio-tools/stable_audio_tools/configs/model_configs/saosmall_ambient_loss.json",
+      "ckpt": "/deepfreeze/pnlong/ambient/runs/ambient/vh6hnoag/checkpoints/last.ckpt"
+    },
+    {
+      "name": "mse loss (baseline)",
+      "model_config": "/home/pnlong/stable-audio-tools/stable_audio_tools/configs/model_configs/saosmall_ambient_loss.json",
+      "ckpt": "/deepfreeze/pnlong/ambient/runs/ambient/o753bkiq/checkpoints/last.ckpt"
+    },
+    {
+      "name": "spdmx 100% (baseline)",
+      "model_config": "/home/pnlong/stable-audio-tools/stable_audio_tools/configs/model_configs/saosmall_ambient_loss.json",
+      "ckpt": "/deepfreeze/pnlong/ambient/runs/ambient/yzz1cu6k/checkpoints/last.ckpt"
+    },
+    {
+      "name": "global t_min, hq/lq intersect",
+      "model_config": "/home/pnlong/stable-audio-tools/stable_audio_tools/configs/model_configs/saosmall_ambient_loss.json",
+      "ckpt": "/deepfreeze/pnlong/ambient/runs/ambient/04gjz2tg/checkpoints/last.ckpt"
+    },  
+    {
+      "name": "global t_min, hq drops below 50%",
+      "model_config": "/home/pnlong/stable-audio-tools/stable_audio_tools/configs/model_configs/saosmall_ambient_loss.json",
+      "ckpt": "/deepfreeze/pnlong/ambient/runs/ambient/ucn26tih/checkpoints/last.ckpt"
+    },
+    {
+      "name": "per-sample t_min",
+      "model_config": "/home/pnlong/stable-audio-tools/stable_audio_tools/configs/model_configs/saosmall_ambient_loss.json",
+      "ckpt": "/deepfreeze/pnlong/ambient/runs/ambient/ptm37ms7/checkpoints/last.ckpt"
+    },
+    {
+      "name": "per-sample t_min, uniform sampling @ high t_min",
+      "model_config": "/home/pnlong/stable-audio-tools/stable_audio_tools/configs/model_configs/saosmall_ambient_loss.json",
+      "ckpt": "/deepfreeze/pnlong/ambient/runs/ambient/t52m48ik/checkpoints/last.ckpt"
+    },
+    {
+      "name": "per-sample t_min, log-SNR uniform sampling @ high t_min",
+      "model_config": "/home/pnlong/stable-audio-tools/stable_audio_tools/configs/model_configs/saosmall_ambient_loss.json",
+      "ckpt": "/deepfreeze/pnlong/ambient/runs/ambient/k01ktwrb/checkpoints/last.ckpt"
+    }
+  ]
+}

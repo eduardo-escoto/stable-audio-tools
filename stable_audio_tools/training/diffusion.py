@@ -1,5 +1,6 @@
 import pytorch_lightning as pl
 import gc
+import os
 import random
 import torch
 import torchaudio
@@ -17,7 +18,7 @@ from torch.nn import functional as F
 from pytorch_lightning.utilities.rank_zero import rank_zero_only
 
 from ..interface.aeiou import pca_point_cloud, audio_spectrogram_image, tokens_spectrogram_image
-from ..inference.sampling import get_alphas_sigmas, sample, sample_discrete_euler, sample_flow_pingpong, truncated_logistic_normal_rescaled, DistributionShift, sample_timesteps_logsnr
+from ..inference.sampling import get_alphas_sigmas, sample, sample_discrete_euler, sample_flow_pingpong, truncated_logistic_normal_rescaled, DistributionShift, sample_timesteps_logsnr, sample_uniform_logsnr_in_range
 from ..models.diffusion import DiffusionModelWrapper, ConditionedDiffusionModelWrapper
 from ..models.autoencoders import DiffusionAutoencoder
 from ..models.inpainting import random_inpaint_mask
@@ -200,7 +201,7 @@ class DiffusionUncondDemoCallback(pl.Callback):
             # Put the demos together
             fakes = rearrange(fakes, 'b d n -> d (b n)')
 
-            filename = f'demo_{trainer.global_step:08}.wav'
+            filename = os.path.join(trainer.default_root_dir, f'demo_{trainer.global_step:08}.wav')
             fakes = fakes.to(torch.float32).div(torch.max(torch.abs(fakes))).mul(32767).to(torch.int16).cpu()
             torchaudio.save(filename, fakes, self.sample_rate)
 
@@ -238,7 +239,9 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
             validation_timesteps = [0.1, 0.3, 0.5, 0.7, 0.9],
             p_one_shot: float = 0.0,
             inpainting_config: dict = None,
-            ambient: bool = False
+            ambient: bool = False,
+            high_min_noise_threshold: tp.Optional[float] = None,
+            high_min_noise_sampler: tp.Literal["uniform", "logsnr_uniform"] = "uniform"
     ):
         super().__init__()
 
@@ -274,8 +277,10 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         self.p_one_shot = p_one_shot
 
         self.ambient = ambient
+        self.diffusion_objective = self.diffusion.diffusion_objective
 
-        self.diffusion_objective = model.diffusion_objective
+        self.high_min_noise_threshold = high_min_noise_threshold
+        self.high_min_noise_sampler = high_min_noise_sampler
 
         # Inpainting
         self.inpainting_config = inpainting_config
@@ -445,7 +450,23 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
                 min_noise_levels.append(min_noise_level)
             min_noise_levels = torch.tensor(min_noise_levels, dtype=t.dtype, device=self.device) # Convert to tensor and move to device
             min_noise_levels = torch.clamp(min_noise_levels, min=MIN_NOISE_LEVEL, max=MAX_NOISE_LEVEL) # Ensure min_noise_levels is between 0 and 1
-            t = min_noise_levels + t * (MAX_NOISE_LEVEL - min_noise_levels) # Rescale timesteps to be between min_noise_levels and 1
+
+            # Rescale timesteps to be between min_noise_levels and 1
+            t = min_noise_levels + t * (MAX_NOISE_LEVEL - min_noise_levels)
+
+            # For samples whose min_noise_level is at or above the threshold, bypass the
+            # base distribution entirely and sample t directly over [min_noise_level, 1]
+            # using a simpler distribution that isn't distorted by the narrow window.
+            if self.high_min_noise_threshold is not None:
+                is_above_high_min_noise_threshold = min_noise_levels >= self.high_min_noise_threshold
+                if self.high_min_noise_sampler == "uniform": # uniform sampling in the range [min_noise_level, 1]
+                    t_above_high_min_noise_threshold = min_noise_levels + torch.rand_like(t) * (MAX_NOISE_LEVEL - min_noise_levels)
+                elif self.high_min_noise_sampler == "logsnr_uniform": # uniform sampling in log-SNR space over [min_noise_level, 1]
+                    t_above_high_min_noise_threshold = sample_uniform_logsnr_in_range(t_min = min_noise_levels, t_max_eps = MAX_NOISE_LEVEL - 1e-6) # subtract 1e-6 to ensure numerical stability in log-SNR space
+                else:
+                    raise ValueError(f"Invalid high_min_noise_sampler: {self.high_min_noise_sampler}")
+                t = torch.where(is_above_high_min_noise_threshold, t_above_high_min_noise_threshold, t)                
+
             min_noise_levels = min_noise_levels[:, None, None] # Expand dimensions to match x_0 with shape (batch_size, 1, 1)
             loss_info["min_noise_levels"] = min_noise_levels # Store min_noise_levels in loss_info for potential use by ambient loss
 
@@ -477,7 +498,7 @@ class DiffusionCondTrainingWrapper(pl.LightningModule):
         noise = torch.randn_like(diffusion_input)
         if self.ambient:
             alpha_t, sigma_t = alphas, sigmas # alias for readability
-            noised_inputs = (alpha_t / (alpha_t_min + 1e-8)) * x_t_min + (torch.sqrt((alpha_t_min**2 * sigma_t**2) - (alpha_t**2 * sigma_t_min**2)) / (alpha_t_min + 1e-8)) * noise
+            noised_inputs = (alpha_t / (alpha_t_min + 1e-8)) * x_t_min + (torch.sqrt(((alpha_t_min**2 * sigma_t**2) - (alpha_t**2 * sigma_t_min**2)).clamp(min = 0)) / (alpha_t_min + 1e-8)) * noise # clamp square root to non-negative values to ensure numerical stability
         else:
             noised_inputs = diffusion_input * alphas + noise * sigmas
 
@@ -752,7 +773,7 @@ class DiffusionCondDemoCallback(pl.Callback):
                 audio_inputs = torch.cat([cond["audio"] for cond in demo_cond], dim=0)
                 audio_inputs = rearrange(audio_inputs, 'b d n -> d (b n)')
 
-                filename = f'demo_audio_cond_{trainer.global_step:08}.wav'
+                filename = os.path.join(trainer.default_root_dir, f'demo_audio_cond_{trainer.global_step:08}.wav')
                 audio_inputs = audio_inputs.to(torch.float32).div(torch.max(torch.abs(audio_inputs))).mul(32767).to(torch.int16).cpu()
                 torchaudio.save(filename, audio_inputs, self.sample_rate)
                 log_audio(trainer.logger, f'demo_audio_cond', filename, self.sample_rate)
@@ -777,7 +798,7 @@ class DiffusionCondDemoCallback(pl.Callback):
                             audio_inputs = module.diffusion.pretransform.decode(audio_inputs)
 
                         audio_inputs_out = rearrange(audio_inputs, 'b d n -> d (b n)')
-                        filename = f'demo_{cond_id}_{trainer.global_step:08}.wav'
+                        filename = os.path.join(trainer.default_root_dir, f'demo_{cond_id}_{trainer.global_step:08}.wav')
                         audio_inputs_out = audio_inputs_out.to(torch.float32).div(torch.max(torch.abs(audio_inputs_out))).mul(32767).to(torch.int16).cpu()
                         torchaudio.save(filename, audio_inputs_out, self.sample_rate)
                         log_audio(trainer.logger, f'demo_{cond_id}', filename, self.sample_rate)
@@ -810,7 +831,7 @@ class DiffusionCondDemoCallback(pl.Callback):
                 # Put the demos together
                 fakes = rearrange(fakes, 'b d n -> d (b n)')
 
-                filename = f'demo_cfg_{cfg_scale}_{trainer.global_step:08}.wav'
+                filename = os.path.join(trainer.default_root_dir, f'demo_cfg_{cfg_scale}_{trainer.global_step:08}.wav')
                 fakes_out = fakes.to(torch.float32)
                 # normalize
                 fakes_out = fakes_out.div(torch.max(torch.abs(fakes_out))).cpu()
@@ -838,7 +859,7 @@ class DiffusionCondDemoCallback(pl.Callback):
                                     # Decode the pre-encoded audio conditioning
                                     audio_inputs = module.diffusion.pretransform.decode(audio_inputs)
 
-                                filename = f'demo_{cond_id}_mix_cfg_{cfg_scale}_{trainer.global_step:08}.wav'
+                                filename = os.path.join(trainer.default_root_dir, f'demo_{cond_id}_mix_cfg_{cfg_scale}_{trainer.global_step:08}.wav')
                                 audio_inputs = rearrange(audio_inputs, 'b d n -> d (b n)')
                                 audio_mix = audio_inputs + fakes
                                 audio_mix_out = audio_mix.to(torch.float32).div(torch.max(torch.abs(audio_mix))).mul(32767).to(torch.int16).cpu()
@@ -866,12 +887,12 @@ class DiffusionCondDemoCallback(pl.Callback):
 
                             submix = torch.stack(submixes, dim=0)
                             submix = rearrange(submix, 'b d n -> d (b n)')
-                            filename = f'demo_{cond_id}_submix_cfg_{cfg_scale}_{trainer.global_step:08}.wav'
+                            filename = os.path.join(trainer.default_root_dir, f'demo_{cond_id}_submix_cfg_{cfg_scale}_{trainer.global_step:08}.wav')
                             submix_out = submix.to(torch.float32).div(torch.max(torch.abs(submix))).mul(32767).to(torch.int16).cpu()
                             torchaudio.save(filename, submix_out, self.sample_rate)
                             log_audio(trainer.logger, f'demo_{cond_id}_submix_cfg_{cfg_scale}', filename, self.sample_rate)
 
-                            filename = f'demo_{cond_id}_mix_cfg_{cfg_scale}_{trainer.global_step:08}.wav'
+                            filename = os.path.join(trainer.default_root_dir, f'demo_{cond_id}_mix_cfg_{cfg_scale}_{trainer.global_step:08}.wav')
                             audio_mix = submix + fakes
                             audio_mix_out = audio_mix.to(torch.float32).div(torch.max(torch.abs(audio_mix))).mul(32767).to(torch.int16).cpu()
                             torchaudio.save(filename, audio_mix_out, self.sample_rate)
@@ -990,7 +1011,7 @@ class DiffusionCondInpaintDemoCallback(pl.Callback):
                 # Put the demos together
                 fakes = rearrange(fakes, 'b d n -> d (b n)')
 
-                filename = f'demo_cfg_{cfg_scale}_{trainer.global_step:08}.wav'
+                filename = os.path.join(trainer.default_root_dir, f'demo_cfg_{cfg_scale}_{trainer.global_step:08}.wav')
                 fakes = fakes.to(torch.float32).div(torch.max(torch.abs(fakes))).mul(32767).to(torch.int16).cpu()
                 torchaudio.save(filename, fakes, self.sample_rate)
 
@@ -1215,7 +1236,7 @@ class DiffusionAutoencoderDemoCallback(pl.Callback):
         # Put the demos together
         reals_fakes = rearrange(reals_fakes, 'b d n -> d (b n)')
 
-        filename = f'recon_{trainer.global_step:08}.wav'
+        filename = os.path.join(trainer.default_root_dir, f'recon_{trainer.global_step:08}.wav')
         reals_fakes = reals_fakes.to(torch.float32).div(torch.max(torch.abs(reals_fakes))).mul(32767).to(torch.int16).cpu()
         torchaudio.save(filename, reals_fakes, self.sample_rate)
 
@@ -1243,7 +1264,7 @@ class DiffusionAutoencoderDemoCallback(pl.Callback):
                 first_stage_fakes = module.diffae_ema.ema_model.pretransform.decode(initial_latents)
                 first_stage_fakes = rearrange(first_stage_fakes, 'b d n -> d (b n)')
                 first_stage_fakes = first_stage_fakes.to(torch.float32).mul(32767).to(torch.int16).cpu()
-                first_stage_filename = f'first_stage_{trainer.global_step:08}.wav'
+                first_stage_filename = os.path.join(trainer.default_root_dir, f'first_stage_{trainer.global_step:08}.wav')
                 torchaudio.save(first_stage_filename, first_stage_fakes, self.sample_rate)
 
                 log_audio(

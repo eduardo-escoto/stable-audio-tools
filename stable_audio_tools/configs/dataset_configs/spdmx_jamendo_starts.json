@@ -1,20 +1,21 @@
 {
     "dataset_type": "pre_encoded",
-    "min_noise_level": 0.7,
     "datasets": [
         {
             "id": "sPDMX_stems_extracted_good",
             "path": "/deepfreeze/share/sPDMX_stems_extracted",
             "custom_metadata_module": "stable_audio_tools/configs/dataset_configs/custom_metadata/sPDMX_extracted_metadata.py",
             "latent_extension": "npy",
-            "blacklist_pth": "stable_audio_tools/configs/dataset_configs/err_npy_files.txt"
+            "blacklist_pth": "stable_audio_tools/configs/dataset_configs/err_npy_files.txt",
+            "min_noise_level": "/deepfreeze/pnlong/ambient/spdmx_min_noise_levels.json"
         },
         {
             "id": "jamendo",
             "path": "/deepfreeze/share/jamendo_extract",
             "custom_metadata_module": "stable_audio_tools/configs/dataset_configs/custom_metadata/custom_md_jamendo.py",
             "latent_extension": "npy",
-            "whitelist_pth": "stable_audio_tools/configs/dataset_configs/jamendo_starts.txt"
+            "whitelist_pth": "stable_audio_tools/configs/dataset_configs/jamendo_starts.txt",
+            "min_noise_level": 0
         }
     ],
     "random_crop": false,

@@ -104,6 +104,7 @@ def generate_diffusion_cond(
         init_audio: tp.Optional[tp.Tuple[int, torch.Tensor]] = None,
         init_noise_level: float = 1.0,
         return_latents = False,
+        quiet: bool = False,
         **sampler_kwargs
         ) -> torch.Tensor: 
     """
@@ -123,6 +124,7 @@ def generate_diffusion_cond(
         init_audio: A tuple of (sample_rate, audio) to use as the initial audio for generation.
         init_noise_level: The noise level to use when generating from an initial audio sample.
         return_latents: Whether to return the latents used for generation instead of the decoded audio.
+        quiet: If True, do not print the random seed for this call.
         **sampler_kwargs: Additional keyword arguments to pass to the sampler.    
     """
 
@@ -136,7 +138,8 @@ def generate_diffusion_cond(
     # Seed
     # The user can explicitly set the seed to deterministically generate the same output. Otherwise, use a random seed.
     seed = seed if seed != -1 else np.random.randint(0, 2**32 - 1)
-    print(seed)
+    if not quiet:
+        print(seed)
     torch.manual_seed(seed)
     # Define the initial noise immediately after setting the seed
     noise = torch.randn([batch_size, model.io_channels, sample_size], device=device)

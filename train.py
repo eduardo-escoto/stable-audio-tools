@@ -70,14 +70,16 @@ def main():
 
     model = create_model_from_config(model_config)
 
-    if args.pretrained_ckpt_path:
-        copy_state_dict(model, load_ckpt_state_dict(args.pretrained_ckpt_path))
+    pretrained_ckpt_path = args.pretrained_ckpt_path or model_config.get("pretrained_ckpt_path", None)
+    if pretrained_ckpt_path:
+        copy_state_dict(model, load_ckpt_state_dict(pretrained_ckpt_path))
 
     if args.remove_pretransform_weight_norm == "pre_load":
         remove_weight_norm_from_model(model.pretransform)
 
-    if args.pretransform_ckpt_path:
-        model.pretransform.load_state_dict(load_ckpt_state_dict(args.pretransform_ckpt_path))
+    pretransform_ckpt_path = args.pretransform_ckpt_path or model_config.get("pretransform_ckpt_path", None)
+    if pretransform_ckpt_path:
+        model.pretransform.load_state_dict(load_ckpt_state_dict(pretransform_ckpt_path))
 
     # Remove weight_norm from the pretransform if specified
     if args.remove_pretransform_weight_norm == "post_load":

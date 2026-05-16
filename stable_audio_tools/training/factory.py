@@ -127,7 +127,9 @@ def create_training_wrapper_from_config(model_config, model):
             timestep_sampler_options = training_config.get("timestep_sampler_options", {}),
             p_one_shot=training_config.get("p_one_shot", 0.0),
             inpainting_config = training_config.get("inpainting", None),
-            ambient=training_config.get("ambient", False)
+            ambient=training_config.get("ambient", False),
+            high_min_noise_threshold=training_config.get("high_min_noise_threshold", None),
+            high_min_noise_sampler=training_config.get("high_min_noise_sampler", "uniform")
         )
     elif model_type == 'diffusion_autoencoder':
         from .diffusion import DiffusionAutoencoderTrainingWrapper
@@ -280,6 +282,8 @@ def create_demo_callback_from_config(model_config, **kwargs):
             t_steps=demo_config.get("t_steps", 50),
             label_key=training_config.get("label_key", "label"),
             class_names=demo_config.get("class_names", None),
+            log_scale_x_axis=demo_config.get("log_scale_x_axis", False),
+            log_scale_stretch=demo_config.get("log_scale_stretch", 1.00005),
         )
     else:
         raise NotImplementedError(f'Unknown model type: {model_type}')

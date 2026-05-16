@@ -1,7 +1,7 @@
 import random
 
+
 def get_custom_metadata(info, audio):
-    
     prompt = info['prompt']
     # randomly shuffle the sentences in the prompt, and drop each with 0.1 probability
     sentences = prompt.split('. ')
@@ -9,6 +9,4 @@ def get_custom_metadata(info, audio):
     sentences = [s for s in sentences if random.random() > 0.1]
     caption = '. '.join(sentences)
 
-    return {
-        "prompt": caption,
-    }
+    return {"prompt": caption}

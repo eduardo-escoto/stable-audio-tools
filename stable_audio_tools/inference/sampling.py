@@ -64,6 +64,51 @@ def sample_timesteps_logsnr(batch_size, mean_logsnr=-1.2, std_logsnr=2.0):
     t = t.clamp(1e-4, 1 - 1e-4)
 
     return t
+
+def sample_uniform_logsnr_in_range(t_min: torch.Tensor, t_max_eps: float = 1 - 1e-4) -> torch.Tensor:
+    """Sample t uniformly in log-SNR space over [t_min, t_max_eps] for each sample.
+
+    Uses the RF-style log-SNR convention: logsnr(t) = log((1-t)/t), which is a
+    decreasing function of t.  A uniform draw in logsnr space therefore places
+    more mass near t_min (high SNR, mild noise) relative to a uniform-in-t draw.
+
+    Args:
+        t_min: tensor of shape (batch,) containing per-sample lower bounds for t.
+        t_max_eps: scalar upper bound for t (default: 1 - 1e-4 for numerical stability).
+
+    Returns:
+        Tensor of shape (batch,) with t values sampled in [t_min_clamped, t_max_eps].
+    """
+    # Validate t_max_eps is less than 1
+    if t_max_eps >= 1:
+        raise ValueError(f"t_max_eps must be less than 1 for numerical stability (since log((1-t)/t) is undefined at t=1), got {t_max_eps}")
+
+    # Promote to float32 for all log/sigmoid operations. In float16, values like
+    # 0.999998 round to exactly 1.0, making (1 - t) = 0, log(0) = -inf, and
+    # 0 * -inf = NaN. float32 keeps enough ULPs of separation near 1.0 to avoid this.
+    t_min_clamped = t_min.to(torch.float32).clamp(min = 1e-4, max = t_max_eps - 1e-6)
+
+    # logsnr is decreasing in t, so logsnr at t_min > logsnr at t_max_eps
+    logsnr_at_t_min = torch.log((1 - t_min_clamped) / t_min_clamped)
+    logsnr_at_t_max = math.log((1 - t_max_eps) / t_max_eps)
+
+    # Sample uniformly in [logsnr_at_t_max, logsnr_at_t_min]
+    u = torch.rand_like(t_min_clamped)
+    logsnr_sample = logsnr_at_t_max + u * (logsnr_at_t_min - logsnr_at_t_max)
+
+    # Convert back to t via sigmoid(-logsnr)
+    t = torch.sigmoid(-logsnr_sample)
+
+    # Clamp values to specified range, clamp separately since t_min_clamped is a tensor and t_max_eps is a scalar
+    t = t.clamp(min = t_min_clamped)
+    t = t.clamp(max = t_max_eps)
+
+    # Convert back to original dtype
+    t = t.to(t_min.dtype)
+    
+    return t
+
+
 def truncated_logistic_normal_rescaled(shape, left_trunc=0.075, right_trunc=1):
     """
 

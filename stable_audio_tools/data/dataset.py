@@ -15,7 +15,7 @@ import webdataset as wds
 from os import path
 from torch import nn
 from torchaudio import transforms as T
-from typing import Optional, Callable, List
+from typing import Optional, Callable, List, Union
 
 from .utils import Stereo, Mono, PhaseFlipper, PadCrop_Normalized_T, VolumeNorm
 
@@ -140,7 +140,7 @@ class LocalDatasetConfig:
         latent_extension: str = "npy",
         whitelist_pth: Optional[str] = None,
         blacklist_pth: Optional[str] = None,
-        min_noise_level: Optional[float] = None,
+        min_noise_level: Optional[Union[float, dict]] = None,
     ):
         self.id = id
         self.path = path
@@ -287,7 +287,12 @@ class SampleDataset(torch.utils.data.Dataset):
 
             for path_prefix, mnl in self.path_min_noise_level.items():
                 if path_prefix in audio_filename:
-                    info["min_noise_level"] = mnl
+                    if isinstance(mnl, dict):
+                        per_sample = mnl.get(audio_filename)
+                        if per_sample is not None:
+                            info["min_noise_level"] = per_sample
+                    else:
+                        info["min_noise_level"] = mnl
                     break
 
             return (audio, info)
@@ -422,7 +427,12 @@ class PreEncodedDataset(torch.utils.data.Dataset):
 
             for path_prefix, mnl in self.path_min_noise_level.items():
                 if path_prefix in latent_filename:
-                    info["min_noise_level"] = mnl
+                    if isinstance(mnl, dict):
+                        per_sample = mnl.get(latent_filename)
+                        if per_sample is not None:
+                            info["min_noise_level"] = per_sample
+                    else:
+                        info["min_noise_level"] = mnl
                     break
 
             info["audio"] = latents
@@ -893,7 +903,6 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
         assert audio_dir_configs is not None, "Directory configuration must be specified in datasets[\"dataset\"]"
 
         configs = []
-        top_min_noise_level = dataset_config.get("min_noise_level", None)
 
         for audio_dir_config in audio_dir_configs:
             audio_dir_path = audio_dir_config.get("path", None)
@@ -909,7 +918,10 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
 
                 custom_metadata_fn = metadata_module.get_custom_metadata
 
-            min_noise_level = audio_dir_config.get("min_noise_level", top_min_noise_level)
+            min_noise_level = audio_dir_config.get("min_noise_level", None)
+            if isinstance(min_noise_level, str):
+                with open(min_noise_level, "r") as f:
+                    min_noise_level = json.load(f)
 
             configs.append(
                 LocalDatasetConfig(
@@ -941,7 +953,6 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
         min_length_sec = dataset_config.get("min_length_sec", None)
         max_length_sec = dataset_config.get("max_length_sec", None)
         random_crop = dataset_config.get("random_crop", False)
-        top_min_noise_level = dataset_config.get("min_noise_level", None)
 
         configs = []
 
@@ -960,7 +971,10 @@ def create_dataloader_from_config(dataset_config, batch_size, sample_size, sampl
 
                 custom_metadata_fn = metadata_module.get_custom_metadata
 
-            min_noise_level = pre_encoded_dir_config.get("min_noise_level", top_min_noise_level)
+            min_noise_level = pre_encoded_dir_config.get("min_noise_level", None)
+            if isinstance(min_noise_level, str):
+                with open(min_noise_level, "r") as f:
+                    min_noise_level = json.load(f)
 
             configs.append(
                 LocalDatasetConfig(
